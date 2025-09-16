@@ -1,0 +1,59 @@
+digraph QSSHProtocolFlow {
+    rankdir=TB;
+    graph [fontname="Arial", fontsize=12, bgcolor="white"];
+    node [shape=box, style="rounded,filled", fillcolor="lightblue", fontname="Arial", fontsize=10];
+    edge [fontname="Arial", fontsize=9];
+    
+    // Define nodes
+    start [label="Connection Start", fillcolor="lightgreen"];
+    tcp [label="TCP Connection\n(Port 22222)"];
+    version [label="Version Exchange\nQSSH v0.1"];
+    client_hello [label="Client Hello\n- Falcon/SPHINCS+ support\n- Random nonce\n- QKD capability"];
+    server_hello [label="Server Hello\n- Algorithm selection\n- Falcon public key\n- Key share + signature\n- QKD endpoint"];
+    
+    kex [label="Key Exchange\n- Falcon key shares\n- Signature verification\n- SPHINCS+ public key", fillcolor="yellow"];
+    qkd [label="QKD Enhancement\n(Optional)\n- Retrieve quantum keys\n- STARK proof", shape=diamond, fillcolor="lightcyan"];
+    
+    kdf [label="Key Derivation\n- HKDF-SHA3-256\n- Mix QKD + PQC keys", fillcolor="orange"];
+    
+    auth [label="Authentication\n- SPHINCS+ signature\n- Session binding"];
+    
+    transport [label="Encrypted Transport\n- AES-256-GCM\n- Sequence numbers", fillcolor="lightgreen"];
+    
+    channels [label="Channel Multiplexing\n- Shell sessions\n- Port forwarding\n- File transfer"];
+    
+    rekey [label="Key Rotation\n- Every hour\n- Every 1GB\n- On demand", shape=diamond];
+    
+    end [label="Connection End", fillcolor="lightcoral"];
+    
+    // Define edges
+    start -> tcp [label="1"];
+    tcp -> version [label="2"];
+    version -> client_hello [label="3"];
+    client_hello -> server_hello [label="4"];
+    server_hello -> kex [label="5"];
+    kex -> qkd [label="6a\n(if available)"];
+    kex -> kdf [label="6b"];
+    qkd -> kdf [label="7"];
+    kdf -> auth [label="8"];
+    auth -> transport [label="9"];
+    transport -> channels [label="10"];
+    channels -> rekey [label="11"];
+    rekey -> transport [label="Yes"];
+    rekey -> end [label="No"];
+    
+    // Subgraph for security properties
+    subgraph cluster_security {
+        label="Security Properties";
+        style=dotted;
+        fontsize=10;
+        
+        pq [label="Post-Quantum\nSecurity", shape=ellipse, fillcolor="lightyellow"];
+        forward [label="Forward\nSecrecy", shape=ellipse, fillcolor="lightyellow"];
+        info [label="Information\nTheoretic\n(with QKD)", shape=ellipse, fillcolor="lightyellow"];
+    }
+    
+    kex -> pq [style=dotted, color=gray];
+    kdf -> forward [style=dotted, color=gray];
+    qkd -> info [style=dotted, color=gray];
+}

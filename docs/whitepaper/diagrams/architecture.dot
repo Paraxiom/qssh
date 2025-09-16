@@ -1,0 +1,80 @@
+digraph QSSHArchitecture {
+    rankdir=LR;
+    graph [fontname="Arial", fontsize=12, bgcolor="white", compound=true];
+    node [shape=record, style="filled", fillcolor="lightgray", fontname="Arial", fontsize=10];
+    edge [fontname="Arial", fontsize=9];
+    
+    // Client Architecture
+    subgraph cluster_client {
+        label="QSSH Client";
+        style="rounded,filled";
+        fillcolor="lightyellow";
+        
+        cli [label="{CLI Interface|qssh user@host|Port: -L/-R|QKD: --qkd}", fillcolor="lightgreen"];
+        
+        client_core [label="{Client Core|Connection Manager|Channel Handler|Port Forwarding}", fillcolor="lightblue"];
+        
+        client_crypto [label="{Crypto Layer|Falcon-512 Signatures|SPHINCS+ Signatures|AES-256-GCM (NIST)}", fillcolor="orange"];
+        
+        client_qkd [label="{QKD Integration|ETSI GS QKD 014|STARK Proofs|Entropy Mixing}", fillcolor="lightcyan"];
+        
+        client_transport [label="{Transport|TCP/IP|Frame Protocol|Encryption}", fillcolor="lightgray"];
+    }
+    
+    // Server Architecture
+    subgraph cluster_server {
+        label="QSSH Server";
+        style="rounded,filled";
+        fillcolor="lightpink";
+        
+        daemon [label="{Daemon|qsshd|Listen: 22222|Max Connections}", fillcolor="lightgreen"];
+        
+        server_core [label="{Server Core|Session Manager|Auth Handler|Channel Mux}", fillcolor="lightblue"];
+        
+        server_crypto [label="{Crypto Layer|Host Keys|Session Keys|Key Rotation}", fillcolor="orange"];
+        
+        server_qkd [label="{QKD Provider|Local QKD Access|Key Distribution|Proof Verification}", fillcolor="lightcyan"];
+        
+        server_transport [label="{Transport|Accept TCP|Encrypted Channels|Flow Control}", fillcolor="lightgray"];
+    }
+    
+    // External Systems
+    subgraph cluster_external {
+        label="External Systems";
+        style="rounded,dashed";
+        
+        qkd_hw [label="{QKD Hardware|Toshiba/IDQ|BB84 Protocol|Photon Source}", shape=cylinder, fillcolor="yellow"];
+        
+        kirq [label="{KIRQ Hub|Entropy API|Network QKD|localhost:8001}", shape=cylinder, fillcolor="yellow"];
+        
+        crypto4a [label="{Crypto4A HSM|Hardware RNG|FIPS Certified|localhost:8106}", shape=cylinder, fillcolor="yellow"];
+    }
+    
+    // Network
+    network [label="Network\n(TCP/IP)", shape=ellipse, fillcolor="lightsteelblue"];
+    
+    // Connections
+    cli -> client_core;
+    client_core -> client_crypto;
+    client_core -> client_qkd [style=dashed, label="optional"];
+    client_crypto -> client_transport;
+    client_qkd -> client_crypto [label="mix keys"];
+    
+    client_transport -> network [label="encrypted\nframes"];
+    network -> server_transport;
+    
+    daemon -> server_core;
+    server_core -> server_crypto;
+    server_core -> server_qkd [style=dashed, label="optional"];
+    server_crypto -> server_transport;
+    server_qkd -> server_crypto [label="quantum\nkeys"];
+    
+    // External connections
+    client_qkd -> kirq [style=dotted, label="HTTPS"];
+    server_qkd -> qkd_hw [style=dotted, label="ETSI API"];
+    server_qkd -> crypto4a [style=dotted, label="entropy"];
+    
+    // Labels for clarity
+    edge [style=invis];
+    cli -> daemon [label="                              Data Flow                              "];
+}

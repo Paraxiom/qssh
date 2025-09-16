@@ -1,0 +1,76 @@
+digraph QSSHSecurityModel {
+    rankdir=TB;
+    graph [fontname="Arial", fontsize=12, bgcolor="white"];
+    node [shape=box, style="rounded,filled", fontname="Arial", fontsize=10];
+    edge [fontname="Arial", fontsize=9];
+    
+    // Threat Model
+    subgraph cluster_threats {
+        label="Threat Model";
+        style="filled,dashed";
+        fillcolor="mistyrose";
+        
+        quantum_adv [label="Quantum Adversary\n- Shor's Algorithm\n- Grover's Algorithm\n- Unlimited quantum power", fillcolor="red", fontcolor="white"];
+        
+        classical_adv [label="Classical Adversary\n- Eavesdropping\n- MITM Attacks\n- Replay Attacks", fillcolor="orange"];
+        
+        implementation [label="Implementation Attacks\n- Side channels\n- Timing attacks\n- Memory leaks", fillcolor="yellow"];
+    }
+    
+    // Defense Layers
+    subgraph cluster_defenses {
+        label="Defense Mechanisms";
+        style="filled,rounded";
+        fillcolor="lightgreen";
+        
+        pqc [label="Post-Quantum Crypto\n- Falcon-512 (Level 1)\n- SPHINCS+ (128-bit)\n- NIST approved", fillcolor="darkgreen", fontcolor="white"];
+        
+        qkd [label="QKD Integration\n- Information theoretic\n- Eavesdrop detection\n- Perfect secrecy", fillcolor="darkblue", fontcolor="white"];
+        
+        protocol [label="Protocol Security\n- Forward secrecy\n- Key rotation\n- Sequence numbers", fillcolor="darkgreen", fontcolor="white"];
+        
+        impl_defense [label="Implementation\n- Constant time\n- Zeroization\n- Memory safety", fillcolor="darkgreen", fontcolor="white"];
+    }
+    
+    // Security Properties
+    subgraph cluster_properties {
+        label="Security Properties Achieved";
+        style="filled";
+        fillcolor="lightblue";
+        
+        conf [label="Confidentiality\n✓ Quantum-safe encryption\n✓ 256-bit keys minimum", shape=diamond];
+        
+        integrity [label="Integrity\n✓ AEAD (Poly1305)\n✓ Message authentication", shape=diamond];
+        
+        auth [label="Authentication\n✓ SPHINCS+ signatures\n✓ Mutual authentication", shape=diamond];
+        
+        forward_sec [label="Forward Secrecy\n✓ Ephemeral keys\n✓ Key deletion", shape=diamond];
+    }
+    
+    // Attack mitigation arrows
+    quantum_adv -> pqc [label="mitigated by", color="green", style="bold"];
+    quantum_adv -> qkd [label="defeated by", color="darkgreen", style="bold"];
+    
+    classical_adv -> pqc [label="prevented by", color="green"];
+    classical_adv -> protocol [label="detected by", color="green"];
+    
+    implementation -> impl_defense [label="hardened against", color="green"];
+    
+    // Property achievement
+    pqc -> conf [color="blue"];
+    pqc -> auth [color="blue"];
+    
+    qkd -> conf [color="blue", style="dashed"];
+    qkd -> forward_sec [color="blue", style="dashed"];
+    
+    protocol -> integrity [color="blue"];
+    protocol -> forward_sec [color="blue"];
+    
+    // Central security statement
+    security [label="QSSH Security Guarantee:\nQuantum-safe today,\nQuantum-proof tomorrow", shape=ellipse, style="bold,filled", fillcolor="gold", fontsize=12];
+    
+    conf -> security;
+    integrity -> security;
+    auth -> security;
+    forward_sec -> security;
+}
