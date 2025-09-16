@@ -15,7 +15,7 @@ We take security seriously in QSSH, especially given its role in secure communic
 
 Please report security vulnerabilities through one of these channels:
 
-1. **Email**: security@quantumverseprotocols.com
+1. **Email**: sylvain@paraxiom.org
 2. **GitHub Security Advisories**: Use the Security tab in this repository
 3. **Encrypted Communication**: Use our PGP key (available in the repository)
 
