@@ -34,7 +34,7 @@
 QSSH_AUTH_PATH=/tmp/qssh_auth ./target/release/qsshd --listen 0.0.0.0:4242
 
 # Connect from client
-./target/release/qssh -p 4242 root@167.99.188.242
+./target/release/qssh -p 4242 root@<your-server-ip>
 ```
 
 ### Feature Tests
