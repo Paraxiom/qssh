@@ -10,15 +10,16 @@ Quantum-resistant SSH replacement using post-quantum cryptography. Your encrypte
 
 RSA and ECDSA encryption will be broken by quantum computers in 5-10 years. Your SSH sessions are being recorded today for future decryption ("harvest now, decrypt later" attacks). QSSH provides immediate protection using lattice-based cryptography that resists quantum attacks, while seamlessly integrating with quantum key distribution networks and hardware entropy sources.
 
-## Ecosystem Positioning
+## OSI Layer Positioning
 
-QSSH is part of a comprehensive post-quantum security ecosystem:
+QSSH operates across multiple OSI layers, just like SSH:
 
-- **Application Layer (QSSH)**: Provides SSH-specific PQ features with QKD/QRNG integration
-- **Network Layer (PQConnect)**: Transparent PQ protection for all traffic (complementary, not competitive)
-- **Infrastructure (PQ-QKD-Proxy)**: Secures QKD hardware APIs from quantum attacks
+- **Layer 7 (Application)**: Shell access, file transfer (SFTP), Git, tunneled applications
+- **Layer 6 (Presentation)**: Terminal emulation, X11 forwarding, encoding
+- **Layer 5 (Session)**: Connection management, channels, multiplexing
+- **Layer 4 (Transport)**: Uses TCP port 42 (configurable)
 
-See [architecture/ecosystem-comparison.md](docs/architecture/ecosystem-comparison.md) for detailed analysis of how QSSH works with PQConnect and other PQ solutions.
+QSSH is a **session-layer protocol** that provides secure remote access and can tunnel any application protocol - from X11 and databases to blockchain RPC - all with post-quantum security.
 
 ## Quick Start
 
