@@ -8,7 +8,16 @@ Quantum-resistant SSH replacement using post-quantum cryptography. Your encrypte
 
 ## Why QSSH?
 
-RSA and ECDSA encryption will be broken by quantum computers in 5-10 years. Your SSH sessions are being recorded today for future decryption ("harvest now, decrypt later" attacks). QSSH provides immediate protection using lattice-based cryptography that resists quantum attacks, while seamlessly integrating with quantum key distribution networks and hardware entropy sources.
+**The Timeline Problem**: IBM's quantum roadmap shows 100,000+ qubit systems by 2033. China claims quantum supremacy breakthroughs yearly. Meanwhile, your SSH traffic is being harvested today for retroactive decryption when RSA/ECDSA fall.
+
+**Who Needs This Now**:
+- Financial institutions with 10+ year data retention requirements
+- Healthcare systems bound by HIPAA's 6-year minimum
+- Government contractors already under NIST mandate for PQC migration
+- Blockchain validators protecting long-lived keys
+- Anyone SSH'ing to critical infrastructure
+
+**For Everyone Else**: You're probably fine with OpenSSH for now. But if you're curious about post-quantum crypto or want to experiment with QKD hardware, QSSH is here as an open-source playground. We're not claiming to replace OpenSSH - we're offering an alternative for specific threat models.
 
 ## OSI Layer Positioning
 
@@ -50,9 +59,9 @@ That's it! You're now quantum-safe with zero configuration.
 - [Performance](#performance)
 - [Contributing](#contributing)
 
-## OpenSSH Feature Parity Status
+## OpenSSH Feature Status
 
-**Current: 100% Feature Parity** 🎉 (19/19 core SSH features)
+**Current: Alpha Implementation** (17/19 core SSH features working)
 
 ### ✅ Implemented (Phase 1 - Core)
 - [x] Basic SSH connection and authentication
@@ -87,9 +96,11 @@ That's it! You're now quantum-safe with zero configuration.
 
 ## Known Limitations
 
-- **No SSH Agent Forwarding yet** - Keys must be present on each server (coming soon)
-- **No compression** - Not critical on modern networks
-- **Single connection per session** - No multiplexing yet
+- **Alpha Software** - Not production-ready, expect bugs
+- **No SSH Agent Forwarding** - Keys must be present on each server
+- **Performance** - Falcon-512 signatures are slower than RSA/Ed25519
+- **Compatibility** - Not a drop-in replacement for all OpenSSH use cases
+- **Code Quality** - Needs security audit before production use
 
 ## Features
 
