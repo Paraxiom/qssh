@@ -5,8 +5,8 @@
 ### ✅ Completed Features
 
 1. **Post-Quantum Cryptography (PQC)**
-   - Fully working with Falcon-512, SPHINCS+, and Kyber algorithms
-   - Hybrid mode combining classical and PQC algorithms
+   - Fully working with Falcon-512 and SPHINCS+ algorithms
+   - Pure PQC implementation (no classical crypto fallback)
    - Key rotation and quantum-secure session management
 
 2. **QKD Framework Integration**

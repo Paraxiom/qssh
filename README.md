@@ -80,9 +80,15 @@ That's it! You're now quantum-safe with zero configuration.
 - [x] **Compression** (zlib, zstd, lz4 with adaptive compression)
 - [x] **Session resumption** (fast reconnection for mobile networks)
 
-### ✅ Implemented (Phase 3 - Advanced Continued)
-- [x] **Certificate-based authentication** (CA-signed certificates with post-quantum signatures)
-- [x] **GSSAPI/Kerberos authentication** (Enterprise SSO support)
+### 🚧 In Development (Phase 3 - Advanced Continued)
+- [ ] **Certificate-based authentication** (Code written, not integrated)
+- [ ] **GSSAPI/Kerberos authentication** (Code written, not integrated)
+
+## Known Limitations
+
+- **No SSH Agent Forwarding yet** - Keys must be present on each server (coming soon)
+- **No compression** - Not critical on modern networks
+- **Single connection per session** - No multiplexing yet
 
 ## Features
 

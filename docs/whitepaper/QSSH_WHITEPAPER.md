@@ -6,7 +6,7 @@
 
 ## Abstract
 
-QSSH (Quantum-Secure SSH) is a post-quantum cryptographic replacement for traditional SSH that provides 99% quantum-safe communication using only post-quantum cryptography (PQC), and 100% quantum-safe communication when layered with Quantum Key Distribution (QKD). This protocol addresses the critical security vulnerability in classical SSH implementations that will be broken by cryptographically-relevant quantum computers.
+QSSH (Quantum-Secure SSH) is a post-quantum cryptographic replacement for traditional SSH that provides computationally quantum-safe communication using NIST-standardized post-quantum cryptography (PQC), with optional Quantum Key Distribution (QKD) integration for information-theoretic security. This protocol addresses the critical security vulnerability in classical SSH implementations that will be broken by cryptographically-relevant quantum computers.
 
 ## Executive Summary
 
@@ -46,7 +46,7 @@ QSSH provides a comprehensive quantum-resistant replacement:
 - **Security Level:** NIST Level 1 (equivalent to AES-128)
 - **Signature Size:** ~690 bytes  
 - **Performance:** Fast signing and verification
-- **Rationale:** Chosen over Kyber KEM due to side-channel timing attack vulnerability
+- **Rationale:** Signature-based approach preferred for authentication integrity
 
 #### 2.1.2 SPHINCS+ Signatures  
 - **Type:** Hash-based signature scheme
@@ -96,13 +96,13 @@ Auth
 - **AES-256:** Brandt-Gullaksen bound shows 256-bit symmetric keys provide 128-bit post-quantum security
 
 #### 2.3.2 Security Levels
-- **PQC-only mode:** 99% quantum-safe
-  - Falcon-512: NIST Level 1 quantum resistance  
+- **PQC-only mode:** Computationally quantum-safe
+  - Falcon-512: NIST Level 1 quantum resistance
   - SPHINCS+: NIST Level 1 quantum resistance
   - AES-256-GCM: 128-bit post-quantum security
-- **PQC+QKD mode:** 100% quantum-safe
-  - Information-theoretic security from QKD
-  - Perfect forward secrecy
+- **PQC+QKD mode (future):** Information-theoretically quantum-safe
+  - Adds QKD for perfect forward secrecy
+  - Defense in depth with two independent quantum-safe layers
 
 ## 3. Protocol Implementation
 

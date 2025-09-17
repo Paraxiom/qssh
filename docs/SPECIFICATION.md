@@ -1,4 +1,4 @@
-# QSSH Protocol Specification v0.1.0
+# QSSH Protocol Specification v1.0.0
 
 ## Abstract
 
@@ -110,17 +110,28 @@ enum MessageType {
     ServerAuth = 0x06,
     HandshakeComplete = 0x07,
     
-    // QKD messages
-    QkdCapability = 0x10,
-    QkdKeyRequest = 0x11,
-    QkdKeyResponse = 0x12,
-    QkdError = 0x13,
+    // QKD messages (future)
+    QkdCapability = 0x10,      // Not yet implemented
+    QkdKeyRequest = 0x11,      // Not yet implemented
+    QkdKeyResponse = 0x12,     // Not yet implemented
+    QkdError = 0x13,           // Not yet implemented
     
-    // Data messages
+    // Channel messages
     ChannelOpen = 0x20,
     ChannelAccept = 0x21,
     ChannelData = 0x22,
     ChannelClose = 0x23,
+    ChannelEof = 0x24,
+    ChannelWindowAdjust = 0x25,
+
+    // Channel requests
+    PtyRequest = 0x26,
+    ShellRequest = 0x27,
+    ExecRequest = 0x28,
+    SubsystemRequest = 0x29,
+    WindowChange = 0x2A,
+    X11Request = 0x2B,
+    ForwardRequest = 0x2C,
     
     // Control messages
     Disconnect = 0x30,
@@ -290,6 +301,31 @@ Implementations MUST:
 - Validate all inputs before processing
 - Implement rate limiting for authentication attempts
 - Support only TLS 1.3 for QKD API connections
+
+## 10. Implementation Status
+
+### 10.1 Fully Implemented
+- ✅ Falcon-512 signatures for authentication
+- ✅ SPHINCS+ for long-term identity keys
+- ✅ AES-256-GCM encryption
+- ✅ Interactive shell with PTY
+- ✅ Port forwarding (local and remote)
+- ✅ Command execution (-c flag)
+- ✅ File transfer (qscp)
+- ✅ Key generation (qssh-keygen)
+- ✅ X11 forwarding messages
+- ✅ Terminal resize handling
+
+### 10.2 Partially Implemented
+- ⚠️ QKD framework (ETSI client ready, awaiting hardware)
+- ⚠️ SFTP subsystem (structure in place)
+
+### 10.3 Planned Features
+- 🔜 SSH agent forwarding (High priority - security critical for multi-hop)
+- 🔜 Certificate authentication (Code written, needs integration)
+- 🔜 GSSAPI/Kerberos (Code written, needs integration)
+- 📋 Compression (Low priority - modern networks reduce need)
+- 📋 Session multiplexing (Performance optimization)
 
 ## References
 
