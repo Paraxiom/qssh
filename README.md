@@ -603,9 +603,7 @@ qssh-diag quantum
 - Increase key generation rate
 - Enable QKD cache
 
-## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ### Quick Guide
 1. Fork the repository
