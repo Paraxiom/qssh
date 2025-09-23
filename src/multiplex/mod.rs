@@ -239,18 +239,21 @@ async fn handle_control_client(
 async fn create_channel(
     transport: &Arc<Transport>,
     command: Option<String>,
-    _env: HashMap<String, String>,
+    env: HashMap<String, String>,
 ) -> Result<u32> {
-    // TODO: Implement actual channel creation on transport
-    // This would send SSH_MSG_CHANNEL_OPEN to the server
+    // Note: Full multiplexing requires transport layer implementation
+    // This is a simplified version that demonstrates the concept
 
-    // For now, return a dummy channel ID
-    static mut NEXT_CHANNEL: u32 = 1;
-    unsafe {
-        let channel_id = NEXT_CHANNEL;
-        NEXT_CHANNEL += 1;
-        Ok(channel_id)
-    }
+    log::warn!("Multiplex channel creation not fully implemented");
+
+    // In production, this would:
+    // 1. Send SSH_MSG_CHANNEL_OPEN to server
+    // 2. Wait for SSH_MSG_CHANNEL_OPEN_CONFIRMATION
+    // 3. Return actual channel ID from server
+
+    Err(QsshError::Protocol(
+        "Multiplexing not available - use separate connections".into()
+    ))
 }
 
 /// Forward data to a channel

@@ -162,8 +162,10 @@ mod tests {
             None
         ).await.unwrap();
 
-        // Lock agent
-        agent.lock("secret123".to_string()).await.unwrap();
+        // Lock agent with test passphrase
+        #[cfg(test)]
+        const TEST_PASSPHRASE: &str = "test_passphrase_only_for_unit_tests";
+        agent.lock(TEST_PASSPHRASE.to_string()).await.unwrap();
 
         // Operations should fail when locked
         assert!(agent.list_keys().await.is_err());
@@ -179,7 +181,7 @@ mod tests {
         assert!(agent.unlock("wrong".to_string()).await.is_err());
 
         // Correct passphrase should work
-        agent.unlock("secret123".to_string()).await.unwrap();
+        agent.unlock(TEST_PASSPHRASE.to_string()).await.unwrap();
 
         // Operations should work again
         assert!(agent.list_keys().await.is_ok());

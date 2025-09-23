@@ -82,7 +82,7 @@ impl SftpSubsystem {
     }
 
     async fn handle_init(&mut self, version: u32) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        println!("[SFTP] Client requested version {}", version);
+        log::debug!("[SFTP] Client requested version {}", version);
 
         // We support version 3
         let supported_version = 3;
@@ -96,7 +96,7 @@ impl SftpSubsystem {
 
     async fn handle_open(&mut self, msg: OpenMessage) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let path = self.resolve_path(&msg.filename);
-        println!("[SFTP] Opening file: {:?} with flags {:?}", path, msg.flags);
+        log::debug!("[SFTP] Opening file: {:?} with flags {:?}", path, msg.flags);
 
         // Create file handle
         let handle = FileHandle::open(path.clone(), msg.flags).await?;
@@ -112,7 +112,7 @@ impl SftpSubsystem {
     }
 
     async fn handle_close(&mut self, id: u32, handle: String) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        println!("[SFTP] Closing handle: {}", handle);
+        log::debug!("[SFTP] Closing handle: {}", handle);
 
         if let Some(mut file_handle) = self.handles.remove(&handle) {
             file_handle.close().await?;
@@ -138,7 +138,7 @@ impl SftpSubsystem {
     }
 
     async fn handle_read(&mut self, msg: ReadMessage) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        println!("[SFTP] Reading {} bytes from handle {} at offset {}",
+        log::debug!("[SFTP] Reading {} bytes from handle {} at offset {}",
                  msg.length, msg.handle, msg.offset);
 
         if let Some(handle) = self.handles.get_mut(&msg.handle) {
@@ -172,7 +172,7 @@ impl SftpSubsystem {
     }
 
     async fn handle_write(&mut self, msg: WriteMessage) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        println!("[SFTP] Writing {} bytes to handle {} at offset {}",
+        log::debug!("[SFTP] Writing {} bytes to handle {} at offset {}",
                  msg.data.len(), msg.handle, msg.offset);
 
         if let Some(handle) = self.handles.get_mut(&msg.handle) {
@@ -198,7 +198,7 @@ impl SftpSubsystem {
 
     async fn handle_opendir(&mut self, msg: OpenDirMessage) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let path = self.resolve_path(&msg.path);
-        println!("[SFTP] Opening directory: {:?}", path);
+        log::debug!("[SFTP] Opening directory: {:?}", path);
 
         // Verify it's a directory
         let metadata = fs::metadata(&path).await?;
@@ -226,7 +226,7 @@ impl SftpSubsystem {
     }
 
     async fn handle_readdir(&mut self, msg: ReadDirMessage) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-        println!("[SFTP] Reading directory from handle: {}", msg.handle);
+        log::debug!("[SFTP] Reading directory from handle: {}", msg.handle);
 
         if let Some(handle) = self.handles.get_mut(&msg.handle) {
             let entries = handle.readdir().await?;
@@ -260,7 +260,7 @@ impl SftpSubsystem {
 
     async fn handle_stat(&mut self, msg: StatMessage) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let path = self.resolve_path(&msg.path);
-        println!("[SFTP] Stat on path: {:?}", path);
+        log::debug!("[SFTP] Stat on path: {:?}", path);
 
         match fs::metadata(&path).await {
             Ok(metadata) => {
@@ -285,7 +285,7 @@ impl SftpSubsystem {
 
     async fn handle_realpath(&mut self, msg: RealPathMessage) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
         let path = self.resolve_path(&msg.path);
-        println!("[SFTP] Realpath for: {} -> {:?}", msg.path, path);
+        log::debug!("[SFTP] Realpath for: {} -> {:?}", msg.path, path);
 
         // Get canonical path
         let canonical = match fs::canonicalize(&path).await {
@@ -384,7 +384,7 @@ impl Subsystem for SftpSubsystem {
     }
 
     async fn start(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        println!("[SFTP] Starting SFTP subsystem");
+        log::debug!("[SFTP] Starting SFTP subsystem");
         Ok(())
     }
 
@@ -417,7 +417,7 @@ impl Subsystem for SftpSubsystem {
     }
 
     async fn shutdown(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        println!("[SFTP] Shutting down SFTP subsystem");
+        log::debug!("[SFTP] Shutting down SFTP subsystem");
 
         // Close all open handles
         for (_, mut handle) in self.handles.drain() {

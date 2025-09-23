@@ -117,3 +117,8 @@ proptest = "1.4"
 criterion = "0.5"
 tempfile = "3.8"
 
+[features]
+default = ["sftp"]
+sftp = []
+gssapi = []  # Experimental - contains placeholders
+multiplex = []  # Incomplete

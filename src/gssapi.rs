@@ -1,3 +1,4 @@
+//! WARNING: This module contains placeholder implementations - DO NOT USE IN PRODUCTION
 //! GSSAPI/Kerberos Authentication Support
 //!
 //! Implements GSSAPI authentication for enterprise environments with Kerberos
@@ -334,7 +335,7 @@ impl GssapiContext {
         let ap_rep = KerberosApRep {
             pvno: 5,
             msg_type: 15, // AP-REP
-            enc_part: vec![0; 64], // Encrypted part
+            enc_part: Vec::new(), // Would contain encrypted part
         };
 
         Ok(GssapiToken {
@@ -350,15 +351,15 @@ impl GssapiContext {
         let type3 = NtlmType3Message {
             signature: b"NTLMSSP\0".to_vec(),
             message_type: 3,
-            lm_response: vec![0; 24],
-            ntlm_response: vec![0; 24],
+            lm_response: Vec::new(),
+            ntlm_response: Vec::new(),
             domain: String::new(),
             username: whoami::username(),
             workstation: hostname::get()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string(),
-            session_key: vec![0; 16],
+            session_key: Vec::new(),
         };
 
         Ok(GssapiToken {
@@ -604,18 +605,21 @@ fn generate_context_id() -> String {
 }
 
 fn encode_kerberos_message<T>(_msg: &T) -> Result<Vec<u8>> {
-    // Would use DER encoding
-    Ok(vec![0; 256]) // Placeholder
+    Err(QsshError::Protocol(
+        "Kerberos message encoding not implemented".into()
+    ))
 }
 
 fn encode_ntlm_message<T>(_msg: &T) -> Result<Vec<u8>> {
-    // Would encode NTLM message
-    Ok(vec![0; 128]) // Placeholder
+    Err(QsshError::Protocol(
+        "NTLM message encoding not implemented".into()
+    ))
 }
 
 fn encode_spnego_message<T>(_msg: &T) -> Result<Vec<u8>> {
-    // Would use DER encoding for SPNEGO
-    Ok(vec![0; 256]) // Placeholder
+    Err(QsshError::Protocol(
+        "SPNEGO message encoding not implemented".into()
+    ))
 }
 
 impl ContextFlags {

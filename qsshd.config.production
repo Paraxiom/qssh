@@ -1,0 +1,19 @@
+# QSSH Production Configuration
+# Copy to /etc/qssh/qsshd.config
+
+# Disable debug features
+debug = false
+log_level = "info"
+
+# Disable incomplete features
+enable_gssapi = false
+enable_multiplex = false
+
+# Security settings
+max_auth_attempts = 3
+password_auth = false
+require_post_quantum = true
+
+# QKD settings (when available)
+qkd_endpoint = ""  # Set when QKD hardware available
+qkd_fallback = "prng"
