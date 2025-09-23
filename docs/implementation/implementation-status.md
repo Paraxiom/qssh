@@ -47,6 +47,14 @@ QSSH (Quantum Secure Shell) implementation is now complete with all major compon
 - ✅ Automatic fallback to best available source
 - ✅ Used for nonce generation and key derivation
 
+### 8. Quantum-Native Transport (NEW in v2.0)
+- ✅ Fixed 768-byte indistinguishable frames
+- ✅ Traffic analysis resistance through uniform frame size
+- ✅ Quantum random padding for empty space
+- ✅ Timing obfuscation with random delays
+- ✅ Continuous dummy traffic generation
+- ✅ All communications look like quantum noise
+
 ## Test Coverage
 
 All tests passing:

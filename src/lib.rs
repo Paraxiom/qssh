@@ -1,7 +1,9 @@
 //! QSSH - Quantum Secure Shell
-//! 
+//!
 //! A quantum-secure replacement for SSH using post-quantum cryptography
 //! and optional QKD (Quantum Key Distribution) integration.
+
+#![recursion_limit = "4096"]
 
 pub mod crypto;
 pub mod transport;
@@ -99,8 +101,8 @@ pub struct QsshConfig {
     /// Key rotation interval (seconds)
     pub key_rotation_interval: u64,
 
-    /// Use quantum-native transport (indistinguishable frames)
-    pub quantum_native: bool,
+    /// Use quantum-resistant transport (uniform 768-byte frames)
+    pub quantum_resistant: bool,
 }
 
 impl Default for QsshConfig {
@@ -117,7 +119,7 @@ impl Default for QsshConfig {
             qkd_ca_path: None,
             pq_algorithm: PqAlgorithm::Falcon512,
             key_rotation_interval: 3600,
-            quantum_native: true,  // Default to quantum-native transport
+            quantum_resistant: true,  // Default to quantum-resistant transport
         }
     }
 }

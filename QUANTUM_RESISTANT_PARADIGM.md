@@ -1,10 +1,10 @@
-# The Quantum-Native Paradigm: QSSH 2.0
+# The Quantum-Resistant Paradigm: QSSH 2.0
 
 ## The Paradigm Shift
 
-QSSH represents a fundamental evolution from "classical protocols with quantum-safe algorithms" to true **quantum-native protocol design**.
+QSSH represents a fundamental evolution from "classical protocols with quantum-safe algorithms" to true **quantum-resistant protocol design**.
 
-## Classical vs Quantum-Native Approaches
+## Classical vs Quantum-Resistant Approaches
 
 ### Traditional "Quantum-Safe" (What Everyone Does):
 ```
@@ -24,9 +24,9 @@ ClientHello (215 bytes) → ServerHello (312 bytes) → KeyExchange (1847 bytes)
 ↑ Quantum computer can analyze these patterns
 ```
 
-### QSSH Quantum-Native Approach:
+### QSSH Quantum-Resistant Approach:
 ```
-Quantum-Native Protocol Design + Quantum-Safe Algorithms = True Quantum Security
+Quantum-Resistant Protocol Design + Quantum-Safe Algorithms = True Quantum Security
 ```
 
 **Solutions:**
@@ -100,9 +100,9 @@ pub struct QuantumFrame {
 OLD: SSH + Kyber = "quantum-safe" (still vulnerable to traffic analysis)
 ```
 
-### QSSH Quantum-Native Solution:
+### QSSH Quantum-Resistant Solution:
 ```
-NEW: Quantum-Native Design = True quantum security
+NEW: Quantum-Resistant Design = True quantum security
 ```
 
 ## Comparison with Other Approaches
@@ -112,7 +112,7 @@ NEW: Quantum-Native Design = True quantum security
 | **Classical SSH** | ❌ Variable sizes | ❌ Plaintext headers | ❌ RSA/ECDSA | 🔴 Classical |
 | **SSH + Kyber** | ❌ Variable sizes | ❌ Plaintext headers | ⚠️ Kyber vulnerable | 🔴 Classical |
 | **QSSH v1.0** | ❌ Variable sizes | ❌ Plaintext headers | ❌ Broken KEM | 🔴 Classical |
-| **QSSH v2.0** | ✅ Fixed 768 bytes | ✅ Encrypted headers | ✅ SPHINCS+/Falcon | 🟢 Quantum-Native |
+| **QSSH v2.0** | ✅ Fixed 768 bytes | ✅ Encrypted headers | ✅ SPHINCS+/Falcon | 🟢 Quantum-Resistant |
 
 ## The Honest Truth
 
@@ -122,7 +122,7 @@ NEW: Quantum-Native Design = True quantum security
 - Vulnerable to traffic analysis
 - False sense of security
 
-**Version 2.0 represents true quantum-native design:**
+**Version 2.0 represents true quantum-resistant design:**
 - Proper SPHINCS+/Falcon KEM implementation
 - Indistinguishable 768-byte frame streams
 - Protection against quantum adversaries
@@ -142,11 +142,11 @@ Ask vendors:
 1. "Show me your frame sizes - are they fixed or variable?"
 2. "How do you prevent quantum traffic analysis?"
 3. "What happens when [current algorithm] gets broken?"
-4. "Is this quantum-native design or classical protocol + new math?"
+4. "Is this quantum-resistant design or classical protocol + new math?"
 
 ## The Future
 
-QSSH v2.0 is **experimental research** into quantum-native protocols. We're:
+QSSH v2.0 is **experimental research** into quantum-resistant protocols. We're:
 - Learning in public
 - Failing transparently
 - Improving constantly
@@ -163,4 +163,4 @@ This isn't about replacing SSH today - it's about exploring what post-quantum pr
 
 ---
 
-*"The best time to design quantum-native protocols was 10 years ago. The second best time is now."*
+*"The best time to design quantum-resistant protocols was 10 years ago. The second best time is now."*

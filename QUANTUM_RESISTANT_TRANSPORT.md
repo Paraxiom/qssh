@@ -1,13 +1,13 @@
-# Quantum-Native Transport Explained
+# Quantum-Resistant Transport Explained
 
-## What is "Quantum-Native" Transport?
+## What is Quantum-Resistant Transport?
 
 Traditional SSH (and even post-quantum SSH) still reveals information through:
 - **Packet sizes** - Different commands produce different sized packets
 - **Timing patterns** - Keystroke timing reveals typing patterns
 - **Traffic analysis** - Packet flow reveals session activity
 
-**Quantum-native transport** makes QSSH traffic **indistinguishable from random quantum noise**.
+**Quantum-resistant transport** uses **uniform 768-byte frames** that hide message boundaries and lengths, making traffic analysis much harder for both classical and quantum adversaries.
 
 ## The 768-Byte Frame Architecture
 
@@ -66,7 +66,7 @@ User types 's' → 1-byte packet
 Server responds → Variable size (directory listing)
 ```
 
-### Quantum-Native QSSH:
+### Quantum-Resistant QSSH:
 ```
 User types 'l' → 768-byte frame (looks random)
 User types 's' → 768-byte frame (looks random)
@@ -148,7 +148,7 @@ Quantum-Native QSSH: ~10-50ms latency (randomized)
 
 Trade-off: 10x latency for complete traffic analysis immunity
 
-## Testing Quantum-Native Properties
+## Testing Quantum-Resistant Properties
 
 ```bash
 # Capture traffic
@@ -168,8 +168,8 @@ dieharder -a < qssh.pcap
 Based on:
 1. **Quantum Information Theory**: Information-theoretic security
 2. **Steganography**: Hiding in plain sight (as noise)
-3. **Chaffing and Winnowing**: Real data indistinguishable from chaff
+3. **Chaffing and Winnowing**: Real data mixed with padding/chaff
 
 ## Conclusion
 
-QSSH with quantum-native transport isn't just "SSH with quantum crypto" - it's a fundamentally different protocol that makes SSH traffic **indistinguishable from quantum noise**, providing unprecedented privacy against both classical and quantum adversaries.
+QSSH with quantum-resistant transport isn't just "SSH with post-quantum crypto" - it uses **uniform framing and timing obfuscation** to resist traffic analysis by both classical and quantum adversaries.

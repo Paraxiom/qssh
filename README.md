@@ -1,10 +1,10 @@
-# QSSH - Quantum-Native Secure Shell
+# QSSH - Quantum-Resistant Secure Shell
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
 [![License: Apache](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE-APACHE)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-blue.svg)](https://www.rust-lang.org)
 
-**True quantum-native protocol design** using indistinguishable 768-byte frames and proper post-quantum cryptography. Not just "classical SSH + quantum algorithms" - a fundamentally new approach to secure communications.
+**Quantum-resistant protocol design** using uniform 768-byte frames and proper post-quantum cryptography. Not just "classical SSH + quantum algorithms" - a fundamentally new approach to secure communications.
 
 ## ⚠️ Important: Version 2.0 Paradigm Shift
 
@@ -21,10 +21,10 @@ ClientHello (215 bytes) → ServerHello (312 bytes) → KeyExchange (1847 bytes)
 ↑ Quantum computers can still analyze these patterns
 ```
 
-### QSSH Quantum-Native Approach:
+### QSSH Quantum-Resistant Approach:
 ```
-→→→→→→→→→→→→→→→→→→→→ (768-byte indistinguishable frames)
-←←←←←←←←←←←←←←←←←← (continuous quantum-native stream)
+→→→→→→→→→→→→→→→→→→→→ (uniform 768-byte frames)
+←←←←←←←←←←←←←←←←←← (continuous obfuscated stream)
 ↑ Quantum computers see uniform random data
 ```
 
@@ -68,17 +68,17 @@ git clone https://github.com/Paraxiom/qssh
 cd qssh
 cargo build --release
 
-# Server: Start with quantum-native transport (default)
-./target/release/qsshd --quantum-native --verbose
+# Server: Start with quantum-resistant transport (default)
+./target/release/qsshd --quantum-resistant --verbose
 
-# Client: Connect with quantum-native transport (default)
-./target/release/qssh --quantum-native user@server
+# Client: Connect with quantum-resistant transport (default)
+./target/release/qssh --quantum-resistant user@server
 
 # Alternative: Use classical transport for compatibility
 ./target/release/qssh --classical user@server
 ```
 
-**You're now using true quantum-native protocol design** - indistinguishable 768-byte frames protecting against quantum traffic analysis.
+**You're now using quantum-resistant protocol design** - uniform 768-byte frames that hide message boundaries and resist traffic analysis.
 
 ⚠️ **Experimental Research**: QSSH v2.0 is for research and testing only. Do not use in production.
 

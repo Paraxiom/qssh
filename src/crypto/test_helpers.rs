@@ -8,8 +8,9 @@ pub mod test_support {
     /// Create a mock PqKeyExchange for testing without calling keypair()
     /// This avoids the segfault in test environments
     pub fn create_test_kex() -> Result<PqKeyExchange> {
-        use pqcrypto_sphincsplus::sphincsharaka128fsimple as sphincs;
+        use pqcrypto_sphincsplus::sphincssha256128ssimple as sphincs;
         use pqcrypto_falcon::falcon512;
+        use pqcrypto_traits::sign::{PublicKey as _, SecretKey as _};
 
         // Create keys from fixed test vectors instead of generating
         // This avoids the segfault in keypair() functions

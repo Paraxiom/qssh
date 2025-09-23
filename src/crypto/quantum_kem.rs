@@ -4,7 +4,7 @@
 //! using SPHINCS+ and Falcon properly.
 
 use crate::{QsshError, Result};
-use pqcrypto_sphincsplus::sphincsharaka128fsimple as sphincs;
+use pqcrypto_sphincsplus::sphincssha256128ssimple as sphincs;
 use pqcrypto_falcon::falcon512;
 use pqcrypto_traits::sign::{PublicKey as _, SecretKey as _, DetachedSignature as _};
 use sha3::{Sha3_512, Digest};

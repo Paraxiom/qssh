@@ -1,6 +1,6 @@
-//! Quantum-Native Transport for QSSH
+//! Quantum-Resistant Transport for QSSH
 //!
-//! Replaces classical SSH framing with indistinguishable 768-byte frames
+//! Uses uniform 768-byte frames to hide message boundaries and resist traffic analysis
 
 use crate::{QsshError, Result};
 use crate::crypto::quantum_kem::QuantumKem;
@@ -8,7 +8,7 @@ use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use rand::RngCore;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -27,12 +27,12 @@ pub enum QuantumFrameType {
     Control = 0x03,    // Channel operations
 }
 
-/// Quantum-native transport using indistinguishable frames
+/// Quantum-resistant transport using uniform 768-byte frames
 pub struct QuantumTransport {
     reader: Arc<Mutex<OwnedReadHalf>>,
     writer: Arc<Mutex<OwnedWriteHalf>>,
-    send_key: Arc<Mutex<[u8; 32]>>,
-    recv_key: Arc<Mutex<[u8; 32]>>,
+    send_key: Arc<RwLock<Vec<u8>>>,
+    recv_key: Arc<RwLock<Vec<u8>>>,
     send_sequence: Arc<Mutex<u64>>,
     recv_sequence: Arc<Mutex<u64>>,
     auth_key: Arc<[u8; 32]>,
@@ -113,8 +113,8 @@ impl QuantumTransport {
         Ok(Self {
             reader: Arc::new(Mutex::new(reader)),
             writer: Arc::new(Mutex::new(writer)),
-            send_key: Arc::new(Mutex::new(send_key)),
-            recv_key: Arc::new(Mutex::new(recv_key)),
+            send_key: Arc::new(RwLock::new(send_key.to_vec())),
+            recv_key: Arc::new(RwLock::new(recv_key.to_vec())),
             send_sequence: Arc::new(Mutex::new(0)),
             recv_sequence: Arc::new(Mutex::new(0)),
             auth_key: Arc::new(auth_key),
@@ -354,7 +354,7 @@ impl QuantumTransport {
 
     /// Encrypt header in place using stream cipher
     async fn encrypt_header(&self, header: &mut EncryptedHeader) -> Result<()> {
-        let key = self.send_key.lock().await;
+        let key = self.send_key.read().await;
 
         // Simple XOR encryption (in production, use ChaCha20)
         for (i, byte) in header.sequence.iter_mut().enumerate() {
@@ -370,7 +370,7 @@ impl QuantumTransport {
 
     /// Decrypt header in place
     async fn decrypt_header(&self, header: &mut EncryptedHeader) -> Result<()> {
-        let key = self.recv_key.lock().await;
+        let key = self.recv_key.read().await;
 
         // XOR decryption (same as encryption)
         for (i, byte) in header.sequence.iter_mut().enumerate() {

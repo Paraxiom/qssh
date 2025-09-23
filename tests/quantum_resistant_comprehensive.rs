@@ -1,12 +1,12 @@
-//! Comprehensive test suite for quantum-native protocol
+//! Comprehensive test suite for quantum-resistant protocol
 
 use qssh::crypto::quantum_kem::QuantumKem;
-use qssh::transport::quantum_native::{QuantumTransport, QuantumFrameType, QUANTUM_FRAME_SIZE};
+use qssh::transport::quantum_resistant::{QuantumTransport, QuantumFrameType, QUANTUM_FRAME_SIZE};
 use tokio::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 use std::collections::HashSet;
 
-/// Test 1: Frame indistinguishability - the core of quantum-native design
+/// Test 1: Frame uniformity - the core of quantum-resistant design
 #[test]
 fn test_frame_indistinguishability_comprehensive() {
     println!("🔬 Testing frame indistinguishability...");
