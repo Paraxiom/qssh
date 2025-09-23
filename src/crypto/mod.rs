@@ -14,6 +14,8 @@ pub mod kdf;
 pub mod quantum_cipher;
 pub mod cipher_choice;
 pub mod qrng_integration;
+#[cfg(test)]
+pub mod test_helpers;
 pub use kdf::{SessionKeyDerivation, SessionKeys};
 pub use quantum_cipher::QuantumCipher;
 pub use cipher_choice::{CipherAlgorithm, UniversalCipher};
@@ -225,14 +227,16 @@ impl PqKeyExchange {
     
     /// Verify a Falcon signature
     pub fn verify_falcon(&self, message: &[u8], signature: &[u8], public_key: &[u8]) -> Result<bool> {
-        let sig = falcon512::SignedMessage::from_bytes(signature)
+        use pqcrypto_traits::sign::{PublicKey as PubKey, DetachedSignature};
+
+        let sig = falcon512::DetachedSignature::from_bytes(signature)
             .map_err(|e| QsshError::Crypto(format!("Invalid Falcon signature: {:?}", e)))?;
-        
+
         let pk = falcon512::PublicKey::from_bytes(public_key)
             .map_err(|e| QsshError::Crypto(format!("Invalid Falcon public key: {:?}", e)))?;
-        
-        match falcon512::open(&sig, &pk) {
-            Ok(msg) => Ok(msg == message),
+
+        match falcon512::verify_detached_signature(&sig, message, &pk) {
+            Ok(_) => Ok(true),
             Err(_) => Ok(false)
         }
     }
