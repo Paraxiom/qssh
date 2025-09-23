@@ -78,11 +78,6 @@ atty = "0.2"
 hostname = "0.4"
 if-addrs = "0.12"
 
-[features]
-default = []
-libp2p-transport = ["libp2p"]
-qkd = ["winterfell"]  # qkd_client disabled until path exists
-
 [[bin]]
 name = "qssh"
 path = "src/bin/qssh.rs"
@@ -122,3 +117,5 @@ default = ["sftp"]
 sftp = []
 gssapi = []  # Experimental - contains placeholders
 multiplex = []  # Incomplete
+libp2p-transport = ["libp2p"]
+qkd = ["winterfell"]  # qkd_client disabled until path exists

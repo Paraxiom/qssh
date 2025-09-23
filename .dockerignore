@@ -1,0 +1,48 @@
+# Git
+.git
+.gitignore
+
+# Rust build artifacts
+target/
+Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Test artifacts
+coverage/
+.coverage
+
+# Documentation build
+site/
+
+# Local config files
+.env
+.env.local
+
+# Keys (for security)
+*.pem
+*.key
+*.p12
+*.jks
+id_*
+known_hosts
+
+# Quantum development artifacts
+*.qdev
+*.qtmp

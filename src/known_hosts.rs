@@ -152,8 +152,13 @@ impl KnownHosts {
         // Parse algorithm
         let algorithm = match parts[idx] {
             "falcon512" => PqAlgorithm::Falcon512,
+            "falcon1024" => PqAlgorithm::Falcon1024,
             "sphincs+" | "sphincsplus" => PqAlgorithm::SphincsPlus,
-            "kyber1024" => PqAlgorithm::Kyber1024,
+            // Legacy/deprecated algorithms - warn but continue
+            "kyber512" | "kyber768" | "kyber1024" => {
+                log::warn!("Deprecated Kyber algorithm '{}' detected in known_hosts. Using Falcon512 instead.", parts[idx]);
+                PqAlgorithm::Falcon512
+            },
             _ => return Err(QsshError::Config(format!("Unknown algorithm: {}", parts[idx]))),
         };
         idx += 1;
@@ -353,9 +358,8 @@ impl KnownHosts {
         // Add algorithm
         let algo_str = match entry.algorithm {
             PqAlgorithm::Falcon512 => "falcon512",
+            PqAlgorithm::Falcon1024 => "falcon1024",
             PqAlgorithm::SphincsPlus => "sphincs+",
-            PqAlgorithm::Kyber1024 => "kyber1024",
-            _ => "unknown",
         };
         line.push_str(algo_str);
         line.push(' ');

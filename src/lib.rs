@@ -127,21 +127,22 @@ pub struct PortForward {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub enum PqAlgorithm {
+    /// SPHINCS+ - Hash-based signature (NIST Level 1)
     SphincsPlus,
-    Kyber512,
-    Kyber768,
-    Kyber1024,
+    /// Falcon-512 - NTRU lattice-based signature (NIST Level 1)
     Falcon512,
+    /// Falcon-1024 - NTRU lattice-based signature (NIST Level 5)
+    Falcon1024,
+    // Note: Kyber algorithms removed due to KyberSlash and timing vulnerabilities
+    // Use SPHINCS+ and Falcon for quantum-resistant cryptography instead
 }
 
 impl std::fmt::Display for PqAlgorithm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PqAlgorithm::SphincsPlus => write!(f, "SPHINCS+"),
-            PqAlgorithm::Kyber512 => write!(f, "Kyber-512"),
-            PqAlgorithm::Kyber768 => write!(f, "Kyber-768"),
-            PqAlgorithm::Kyber1024 => write!(f, "Kyber-1024"),
-            PqAlgorithm::Falcon512 => write!(f, "Falcon-512"),
+            PqAlgorithm::SphincsPlus => write!(f, "SPHINCS+ (hash-based, quantum-safe)"),
+            PqAlgorithm::Falcon512 => write!(f, "Falcon-512 (NTRU lattice, NIST Level 1)"),
+            PqAlgorithm::Falcon1024 => write!(f, "Falcon-1024 (NTRU lattice, NIST Level 5)"),
         }
     }
 }
@@ -151,9 +152,9 @@ impl std::fmt::Display for PqAlgorithm {
 pub struct QuantumCapabilities {
     pub supports_qkd: bool,
     pub supports_sphincs: bool,
-    pub supports_kyber: bool,
     pub supports_falcon: bool,
     pub qkd_endpoints: Vec<String>,
+    // Note: Kyber support removed due to vulnerabilities
 }
 
 /// Re-exports for convenience
