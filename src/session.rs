@@ -506,7 +506,7 @@ mod tests {
             "test.server",
             "testuser",
             state.clone(),
-            PqAlgorithm::Kyber1024,
+            PqAlgorithm::Falcon512,
         ).await.unwrap();
 
         // Validate ticket

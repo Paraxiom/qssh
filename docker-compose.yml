@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  qsshd:
+    build: .
+    container_name: qsshd-server
+    ports:
+      - "22222:22222"
+    volumes:
+      - qssh_keys:/home/qssh/.qssh
+      - qssh_logs:/var/log/qssh
+      - ./qsshd.config.production:/etc/qssh/qsshd.conf:ro
+    environment:
+      - QSSH_LOG_LEVEL=info
+      - QSSH_MAX_CONNECTIONS=100
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "qssh", "-c", "echo 'health check'", "localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - qssh_network
+
+  # Client example (for testing)
+  qssh-client:
+    build: .
+    container_name: qssh-client
+    depends_on:
+      - qsshd
+    volumes:
+      - qssh_client_keys:/home/qssh/.qssh
+    environment:
+      - QSSH_LOG_LEVEL=info
+    networks:
+      - qssh_network
+    entrypoint: ["/bin/bash"]
+    command: ["-c", "sleep infinity"]  # Keep container running for manual testing
+    profiles:
+      - client  # Only start with --profile client
+
+  # QKD simulator (optional, for quantum key distribution testing)
+  qkd-simulator:
+    image: alpine:latest
+    container_name: qkd-simulator
+    ports:
+      - "8443:8443"
+    command: >
+      sh -c "
+        echo 'QKD Simulator running on port 8443';
+        echo 'This simulates a quantum key distribution endpoint';
+        nc -l -p 8443
+      "
+    networks:
+      - qssh_network
+    profiles:
+      - qkd  # Only start with --profile qkd
+
+networks:
+  qssh_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  qssh_keys:
+    driver: local
+  qssh_client_keys:
+    driver: local
+  qssh_logs:
+    driver: local

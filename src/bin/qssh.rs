@@ -47,7 +47,7 @@ struct Args {
     #[clap(short = 'R', long)]
     remote: Vec<String>,
     
-    /// Post-quantum algorithm to use
+    /// Post-quantum algorithm to use (sphincs, falcon512, falcon1024)
     #[clap(long, default_value = "sphincs")]
     pq_algo: String,
     
@@ -148,15 +148,20 @@ async fn main() {
         }
     }
     
-    // Determine PQ algorithm
+    // Determine PQ algorithm (Kyber removed due to vulnerabilities)
     let pq_algorithm = match args.pq_algo.as_str() {
         "sphincs" => PqAlgorithm::SphincsPlus,
-        "kyber" | "kyber512" => PqAlgorithm::Kyber512,
-        "kyber768" => PqAlgorithm::Kyber768,
-        "kyber1024" => PqAlgorithm::Kyber1024,
-        "falcon" => PqAlgorithm::Falcon512,
+        "falcon" | "falcon512" => PqAlgorithm::Falcon512,
+        "falcon1024" => PqAlgorithm::Falcon1024,
+        // Warn about deprecated/vulnerable algorithms
+        "kyber" | "kyber512" | "kyber768" | "kyber1024" => {
+            eprintln!("Warning: Kyber algorithms are vulnerable to KyberSlash attacks.");
+            eprintln!("Using Falcon-512 instead for quantum security.");
+            PqAlgorithm::Falcon512
+        },
         _ => {
             eprintln!("Error: Unknown PQ algorithm: {}", args.pq_algo);
+            eprintln!("Available algorithms: sphincs, falcon512, falcon1024");
             process::exit(1);
         }
     };

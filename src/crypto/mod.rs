@@ -15,6 +15,8 @@ pub mod quantum_cipher;
 pub mod cipher_choice;
 pub mod qrng_integration;
 pub mod quantum_kem;  // PROPER quantum KEM (not broken signature-only!)
+#[cfg(test)]
+pub mod test_helpers;
 pub use kdf::{SessionKeyDerivation, SessionKeys};
 pub use quantum_cipher::QuantumCipher;
 pub use cipher_choice::{CipherAlgorithm, UniversalCipher};
@@ -95,10 +97,10 @@ impl PqKeyExchange {
         // Use best available RNG (OS entropy, potentially enhanced by hardware)
         rand::thread_rng().fill_bytes(&mut ephemeral_secret);
         
-        // Sign with Falcon for authenticity
-        let signature = falcon512::sign(&ephemeral_secret, &self.falcon_sk);
-        
-        use SignedMessageTrait;
+        // Sign with Falcon for authenticity using detached signature
+        let signature = falcon512::detached_sign(&ephemeral_secret, &self.falcon_sk);
+
+        use pqcrypto_traits::sign::DetachedSignature as DetachedSignatureTrait;
         Ok((ephemeral_secret, signature.as_bytes().to_vec()))
     }
     
@@ -120,38 +122,37 @@ impl PqKeyExchange {
             )));
         }
         
-        // Verify Falcon signature
+        // Verify Falcon signature using detached signature verification
+        use pqcrypto_traits::sign::{PublicKey as PubKey, DetachedSignature};
+
         let pk = match falcon512::PublicKey::from_bytes(peer_falcon_pk) {
             Ok(key) => key,
             Err(e) => {
-                log::error!("Failed to parse Falcon public key of size {}: {:?}", 
+                log::error!("Failed to parse Falcon public key of size {}: {:?}",
                     peer_falcon_pk.len(), e);
                 return Err(QsshError::Crypto(format!("Invalid Falcon public key: {:?}", e)));
             }
         };
-        
-        let sig = match falcon512::SignedMessage::from_bytes(peer_signature) {
+
+        // Parse as detached signature (signature only, not signed message)
+        let sig = match falcon512::DetachedSignature::from_bytes(peer_signature) {
             Ok(signature) => signature,
             Err(e) => {
-                log::error!("Failed to parse Falcon signature of size {}: {:?}", 
+                log::error!("Failed to parse Falcon detached signature of size {}: {:?}",
                     peer_signature.len(), e);
                 return Err(QsshError::Crypto(format!("Invalid Falcon signature: {:?}", e)));
             }
         };
-        
-        let opened = match falcon512::open(&sig, &pk) {
-            Ok(msg) => msg,
+
+        // Verify the detached signature against the share data
+        match falcon512::verify_detached_signature(&sig, peer_share, &pk) {
+            Ok(_) => {
+                log::debug!("Falcon signature verified successfully");
+            }
             Err(_) => {
                 log::error!("Falcon signature verification failed");
                 return Err(QsshError::Crypto("Invalid Falcon signature".into()));
             }
-        };
-        
-        // Verify the opened message matches the peer share
-        if opened != peer_share {
-            log::error!("Signature mismatch: opened {} bytes, expected {}", 
-                opened.len(), peer_share.len());
-            return Err(QsshError::Crypto("Signature verification failed".into()));
         }
         
         // Return the verified share
@@ -227,14 +228,16 @@ impl PqKeyExchange {
     
     /// Verify a Falcon signature
     pub fn verify_falcon(&self, message: &[u8], signature: &[u8], public_key: &[u8]) -> Result<bool> {
-        let sig = falcon512::SignedMessage::from_bytes(signature)
+        use pqcrypto_traits::sign::{PublicKey as PubKey, DetachedSignature};
+
+        let sig = falcon512::DetachedSignature::from_bytes(signature)
             .map_err(|e| QsshError::Crypto(format!("Invalid Falcon signature: {:?}", e)))?;
-        
+
         let pk = falcon512::PublicKey::from_bytes(public_key)
             .map_err(|e| QsshError::Crypto(format!("Invalid Falcon public key: {:?}", e)))?;
-        
-        match falcon512::open(&sig, &pk) {
-            Ok(msg) => Ok(msg == message),
+
+        match falcon512::verify_detached_signature(&sig, message, &pk) {
+            Ok(_) => Ok(true),
             Err(_) => Ok(false)
         }
     }

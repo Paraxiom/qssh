@@ -156,10 +156,13 @@ impl ConfigParser {
                 "pqalgorithm" => {
                     current_config.pq_algorithm = match value.to_lowercase().as_str() {
                         "sphincs" | "sphincsplus" => Some(PqAlgorithm::SphincsPlus),
-                        "kyber512" => Some(PqAlgorithm::Kyber512),
-                        "kyber768" => Some(PqAlgorithm::Kyber768),
-                        "kyber1024" => Some(PqAlgorithm::Kyber1024),
                         "falcon" | "falcon512" => Some(PqAlgorithm::Falcon512),
+                        "falcon1024" => Some(PqAlgorithm::Falcon1024),
+                        // Deprecated/vulnerable algorithms - warn and use safe alternative
+                        "kyber512" | "kyber768" | "kyber1024" => {
+                            log::warn!("Kyber algorithm '{}' is vulnerable (KyberSlash). Using Falcon512 instead.", value);
+                            Some(PqAlgorithm::Falcon512)
+                        },
                         _ => None,
                     };
                 }
