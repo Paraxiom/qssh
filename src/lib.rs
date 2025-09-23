@@ -37,9 +37,11 @@ pub mod compression;
 pub mod session;
 pub mod certificate;
 pub mod gssapi;
+pub mod security_tiers;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use crate::security_tiers::SecurityTier;
 
 #[derive(Error, Debug)]
 pub enum QsshError {
@@ -101,8 +103,8 @@ pub struct QsshConfig {
     /// Key rotation interval (seconds)
     pub key_rotation_interval: u64,
 
-    /// Use quantum-resistant transport (uniform 768-byte frames)
-    pub quantum_resistant: bool,
+    /// Security tier for this connection
+    pub security_tier: SecurityTier,
 }
 
 impl Default for QsshConfig {
@@ -119,7 +121,7 @@ impl Default for QsshConfig {
             qkd_ca_path: None,
             pq_algorithm: PqAlgorithm::Falcon512,
             key_rotation_interval: 3600,
-            quantum_resistant: true,  // Default to quantum-resistant transport
+            security_tier: SecurityTier::default(),  // T2: Hardened PQ
         }
     }
 }
