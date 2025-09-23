@@ -1,10 +1,40 @@
-# QSSH - Quantum Secure Shell
+# QSSH - Quantum-Native Secure Shell
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
 [![License: Apache](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE-APACHE)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-blue.svg)](https://www.rust-lang.org)
 
-Quantum-resistant SSH replacement using post-quantum cryptography. Your encrypted connections remain secure even against quantum computers.
+**True quantum-native protocol design** using indistinguishable 768-byte frames and proper post-quantum cryptography. Not just "classical SSH + quantum algorithms" - a fundamentally new approach to secure communications.
+
+## ⚠️ Important: Version 2.0 Paradigm Shift
+
+**QSSH v1.0 was fundamentally broken** - it used signatures for key exchange and followed classical protocol patterns. **QSSH v2.0 represents a complete paradigm shift** to quantum-native design.
+
+See [HONEST_UPDATE_POST.md](HONEST_UPDATE_POST.md) for the full story of what we fixed and why.
+
+## The Quantum-Native Difference
+
+### Traditional "Quantum-Safe" Approach:
+```
+Classical SSH Protocol + Post-Quantum Algorithms = "Quantum-Safe"
+ClientHello (215 bytes) → ServerHello (312 bytes) → KeyExchange (1847 bytes)
+↑ Quantum computers can still analyze these patterns
+```
+
+### QSSH Quantum-Native Approach:
+```
+→→→→→→→→→→→→→→→→→→→→ (768-byte indistinguishable frames)
+←←←←←←←←←←←←←←←←←← (continuous quantum-native stream)
+↑ Quantum computers see uniform random data
+```
+
+**Key Innovations:**
+- **Indistinguishable Frames**: All traffic exactly 768 bytes
+- **Proper KEM**: SPHINCS+/Falcon, not signature abuse
+- **Traffic Analysis Resistance**: No metadata leakage
+- **Defense in Depth**: Multiple quantum-safe algorithms
+
+See [QUANTUM_NATIVE_PARADIGM.md](QUANTUM_NATIVE_PARADIGM.md) for the full technical explanation.
 
 ## Why QSSH?
 
@@ -33,17 +63,24 @@ QSSH is a **session-layer protocol** that provides secure remote access and can 
 ## Quick Start
 
 ```bash
-# Install
-cargo install qssh
+# Build QSSH (experimental - not on crates.io yet)
+git clone https://github.com/Paraxiom/qssh
+cd qssh
+cargo build --release
 
-# Generate quantum-safe keys
-qssh-keygen
+# Server: Start with quantum-native transport (default)
+./target/release/qsshd --quantum-native --verbose
 
-# Connect (just like SSH)
-qssh user@server
+# Client: Connect with quantum-native transport (default)
+./target/release/qssh --quantum-native user@server
+
+# Alternative: Use classical transport for compatibility
+./target/release/qssh --classical user@server
 ```
 
-That's it! You're now quantum-safe with zero configuration.
+**You're now using true quantum-native protocol design** - indistinguishable 768-byte frames protecting against quantum traffic analysis.
+
+⚠️ **Experimental Research**: QSSH v2.0 is for research and testing only. Do not use in production.
 
 ## Table of Contents
 

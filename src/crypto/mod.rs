@@ -14,6 +14,7 @@ pub mod kdf;
 pub mod quantum_cipher;
 pub mod cipher_choice;
 pub mod qrng_integration;
+pub mod quantum_kem;  // PROPER quantum KEM (not broken signature-only!)
 pub use kdf::{SessionKeyDerivation, SessionKeys};
 pub use quantum_cipher::QuantumCipher;
 pub use cipher_choice::{CipherAlgorithm, UniversalCipher};

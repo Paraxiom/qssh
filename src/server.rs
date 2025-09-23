@@ -21,6 +21,7 @@ pub struct QsshServerConfig {
     pub authorized_keys: HashMap<String, Vec<u8>>, // username -> public key
     pub qkd_enabled: bool,
     pub qkd_endpoint: Option<String>,
+    pub quantum_native: bool,
 }
 
 impl QsshServerConfig {
@@ -34,6 +35,7 @@ impl QsshServerConfig {
             authorized_keys: HashMap::new(),
             qkd_enabled: false,
             qkd_endpoint: None,
+            quantum_native: true,  // Default to quantum-native
         })
     }
     

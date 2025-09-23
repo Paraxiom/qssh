@@ -11,9 +11,24 @@ use tokio::sync::Mutex;
 
 pub mod protocol;
 pub mod channel;
+pub mod quantum_native;
 
 pub use protocol::*;
 pub use channel::*;
+pub use quantum_native::*;
+
+/// Unified transport trait for both classical and quantum-native transports
+#[async_trait::async_trait]
+pub trait QsshTransport: Send + Sync {
+    /// Send a message
+    async fn send_message<T: serde::Serialize + Send + Sync>(&self, message: &T) -> Result<()>;
+
+    /// Receive a message
+    async fn receive_message<T: for<'de> serde::Deserialize<'de>>(&self) -> Result<T>;
+
+    /// Close the transport
+    async fn close(&self) -> Result<()>;
+}
 
 /// Maximum message size (1MB)
 const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
@@ -173,5 +188,21 @@ impl Transport {
         writer.shutdown().await
             .map_err(|e| QsshError::Io(e))?;
         Ok(())
+    }
+}
+
+/// Implement unified transport trait for classical transport
+#[async_trait::async_trait]
+impl QsshTransport for Transport {
+    async fn send_message<T: serde::Serialize + Send + Sync>(&self, message: &T) -> Result<()> {
+        self.send_message(message).await
+    }
+
+    async fn receive_message<T: for<'de> serde::Deserialize<'de>>(&self) -> Result<T> {
+        self.receive_message().await
+    }
+
+    async fn close(&self) -> Result<()> {
+        self.close().await
     }
 }

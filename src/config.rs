@@ -300,6 +300,7 @@ impl ConfigParser {
             qkd_ca_path: host_config.qkd_ca_path,
             pq_algorithm: host_config.pq_algorithm.unwrap_or(PqAlgorithm::Falcon512),
             key_rotation_interval: host_config.key_rotation_interval.unwrap_or(3600),
+            quantum_native: true,  // Default to quantum-native transport
         })
     }
 }
