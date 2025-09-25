@@ -61,7 +61,7 @@ That's it! You're now quantum-safe with zero configuration.
 
 ## OpenSSH Feature Status
 
-**Current: Alpha Implementation** (17/19 core SSH features working)
+**Current: v1.0.0 - Experimental Implementation**
 
 ### ✅ Implemented (Phase 1 - Core)
 - [x] Basic SSH connection and authentication
@@ -90,14 +90,28 @@ That's it! You're now quantum-safe with zero configuration.
 - [x] **Compression** (zlib, zstd, lz4 with adaptive compression)
 - [x] **Session resumption** (fast reconnection for mobile networks)
 
-### 🚧 In Development (Phase 3 - Advanced Continued)
-- [ ] **Certificate-based authentication** (Code written, not integrated)
-- [ ] **GSSAPI/Kerberos authentication** (Code written, not integrated)
+### ⏳ Not Yet Implemented
+- [ ] **Certificate-based authentication** (Planned for v2.0)
+- [ ] **GSSAPI/Kerberos authentication** (Returns 'not implemented' errors)
+- [ ] **SSH Agent Forwarding** (Security review needed)
 
 ## Known Limitations
 
-- **Alpha Software** - Not production-ready, expect bugs
+### Production Status
+- **Experimental Software** - v1.0.0 is for research and testing
+- **Not audited** - No formal security audit has been performed
+- **Limited testing** - Primarily tested on Linux/macOS
+
+### Feature Limitations
+- **GSSAPI/Kerberos** - Returns 'not implemented' errors
+- **Multiplexing** - Returns proper error instead of creating channels
 - **No SSH Agent Forwarding** - Keys must be present on each server
+- **Certificate auth** - Not yet integrated
+
+### Security Notes
+- All placeholder implementations have been replaced with proper errors
+- No dummy data or zero-filled buffers returned
+- Debug output uses proper logging framework
 - **Performance** - Falcon-512 signatures are slower than RSA/Ed25519
 - **Compatibility** - Not a drop-in replacement for all OpenSSH use cases
 - **Code Quality** - Needs security audit before production use

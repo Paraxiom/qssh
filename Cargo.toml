@@ -4,7 +4,7 @@ version = "1.0.0"
 edition = "2021"
 authors = ["QuantumVerse Protocols"]
 license = "MIT OR Apache-2.0"
-description = "Quantum-Secure Shell - SSH replacement with post-quantum cryptography and QKD integration"
+description = "Experimental quantum-safe SSH using post-quantum crypto. Research project - NOT for production. See LIMITATIONS.md"
 repository = "https://github.com/QuantumVerseProtocols/qssh"
 readme = "README.md"
 
