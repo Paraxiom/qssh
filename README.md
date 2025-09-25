@@ -61,7 +61,7 @@ That's it! You're now quantum-safe with zero configuration.
 
 ## OpenSSH Feature Status
 
-**Current: v1.0.0 - Experimental Implementation**
+**Current: v0.0.1-alpha - Early Experimental Implementation**
 
 ### ✅ Implemented (Phase 1 - Core)
 - [x] Basic SSH connection and authentication

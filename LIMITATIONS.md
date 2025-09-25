@@ -1,4 +1,4 @@
-# QSSH v1.0.0 - Known Limitations and Status
+# QSSH v0.0.1-alpha - Known Limitations and Status
 
 ## Production Readiness
 

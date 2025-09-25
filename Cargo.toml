@@ -1,6 +1,6 @@
 [package]
 name = "qssh"
-version = "1.0.0"
+version = "0.0.1-alpha"
 edition = "2021"
 authors = ["QuantumVerse Protocols"]
 license = "MIT OR Apache-2.0"
