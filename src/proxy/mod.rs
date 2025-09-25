@@ -257,14 +257,14 @@ impl QsshClient {
     pub async fn request_port_forward(&mut self, local_port: u16, remote_host: &str, remote_port: u16) -> Result<()> {
         // Implementation would send SSH2_MSG_GLOBAL_REQUEST for "tcpip-forward"
         // This is a placeholder for the actual implementation
-        println!("Setting up port forward: {}:{}:{}", local_port, remote_host, remote_port);
+        log::info!("Setting up port forward: {}:{}:{}", local_port, remote_host, remote_port);
         Ok(())
     }
 
     /// Open direct TCP/IP channel
     pub async fn open_direct_tcpip(&mut self, host: &str, port: u16) -> Result<DirectTcpipChannel> {
         // Implementation would send SSH2_MSG_CHANNEL_OPEN for "direct-tcpip"
-        println!("Opening direct-tcpip to {}:{}", host, port);
+        log::debug!("Opening direct-tcpip to {}:{}", host, port);
         Ok(DirectTcpipChannel::new())
     }
 }

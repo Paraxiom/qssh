@@ -401,14 +401,14 @@ impl GssapiContext {
 
     /// Get service ticket (Kerberos)
     fn get_service_ticket(&self) -> Result<Vec<u8>> {
-        // Would fetch from credential cache
-        Ok(vec![0; 256]) // Placeholder ticket
+        // TODO: Implement actual Kerberos ticket fetching
+        Err(QsshError::Protocol("Kerberos service tickets not implemented".into()))
     }
 
     /// Create authenticator (Kerberos)
     fn create_authenticator(&self) -> Result<Vec<u8>> {
-        // Would create encrypted authenticator
-        Ok(vec![0; 128]) // Placeholder authenticator
+        // TODO: Implement actual Kerberos authenticator creation
+        Err(QsshError::Protocol("Kerberos authenticators not implemented".into()))
     }
 
     /// Create message integrity check token

@@ -436,8 +436,8 @@ impl KnownHosts {
 
     /// Interactive prompt for unknown host
     pub fn prompt_unknown_host(&self, hostname: &str, fingerprint: &str) -> Result<bool> {
-        println!("The authenticity of host '{}' can't be established.", hostname);
-        println!("Post-quantum key fingerprint is {}.", fingerprint);
+        log::info!("The authenticity of host '{}' can't be established.", hostname);
+        log::info!("Post-quantum key fingerprint is {}.", fingerprint);
         print!("Are you sure you want to continue connecting (yes/no/[fingerprint])? ");
         std::io::stdout().flush()?;
 
