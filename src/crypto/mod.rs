@@ -133,16 +133,31 @@ impl PqKeyExchange {
             }
         };
 
-        // Parse as detached signature (signature only, not signed message)
-        let sig = match falcon512::DetachedSignature::from_bytes(peer_signature) {
-            Ok(signature) => signature,
-            Err(e) => {
-                log::error!("Failed to parse Falcon detached signature of size {}: {:?}",
-                    peer_signature.len(), e);
-                return Err(QsshError::Crypto(format!("Invalid Falcon signature: {:?}", e)));
+
+        // Parse as detached signature - try multiple sizes for variable-length Falcon sigs
+        // Falcon-512 signatures vary in length due to compression (typically 650-700 bytes)
+        let possible_sizes: &[usize] = &[666, 690, 688, 689, 686, 695, 691, 693, 692, 687, 685, 694, 696, 684, 697];
+        let mut sig_opt: Option<falcon512::DetachedSignature> = None;
+        
+        for &size in possible_sizes {
+            if peer_signature.len() >= size {
+                if let Ok(s) = falcon512::DetachedSignature::from_bytes(&peer_signature[..size]) {
+                    log::debug!("Parsed Falcon signature at size {}", size);
+                    sig_opt = Some(s);
+                    break;
+                }
+            }
+        }
+        
+        // Also try exact length as fallback
+        let sig = match sig_opt.or_else(|| falcon512::DetachedSignature::from_bytes(peer_signature).ok()) {
+            Some(signature) => signature,
+            None => {
+                log::error!("Failed to parse Falcon signature of size {} after trying sizes {:?}",
+                    peer_signature.len(), possible_sizes);
+                return Err(QsshError::Crypto("Invalid Falcon signature: no valid size found".into()));
             }
         };
-
         // Verify the detached signature against the share data
         match falcon512::verify_detached_signature(&sig, peer_share, &pk) {
             Ok(_) => {
