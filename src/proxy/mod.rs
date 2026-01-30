@@ -90,6 +90,7 @@ impl ProxyConnection {
             qkd_ca_path: None,
             pq_algorithm: crate::PqAlgorithm::Falcon512,
             key_rotation_interval: 3600,
+            security_tier: crate::SecurityTier::default(),
             quantum_native: true,
         });
 
@@ -132,6 +133,7 @@ impl ProxyConnection {
             qkd_ca_path: None,
             pq_algorithm: crate::PqAlgorithm::Falcon512,
             key_rotation_interval: 3600,
+            security_tier: crate::SecurityTier::default(),
             quantum_native: true,
         });
 

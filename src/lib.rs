@@ -1,7 +1,9 @@
 //! QSSH - Quantum Secure Shell
-//! 
+//!
 //! A quantum-secure replacement for SSH using post-quantum cryptography
 //! and optional QKD (Quantum Key Distribution) integration.
+
+#![recursion_limit = "4096"]
 
 pub mod crypto;
 pub mod transport;
@@ -35,9 +37,13 @@ pub mod compression;
 pub mod session;
 pub mod certificate;
 pub mod gssapi;
+pub mod security_tiers;
+#[cfg(feature = "drista")]
+pub mod drista_integration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use crate::security_tiers::SecurityTier;
 
 #[derive(Error, Debug)]
 pub enum QsshError {
@@ -99,7 +105,10 @@ pub struct QsshConfig {
     /// Key rotation interval (seconds)
     pub key_rotation_interval: u64,
 
-    /// Use quantum-native transport (indistinguishable frames)
+    /// Security tier for this connection
+    pub security_tier: SecurityTier,
+
+    /// Use quantum-native transport (768-byte indistinguishable frames)
     pub quantum_native: bool,
 }
 
@@ -117,6 +126,7 @@ impl Default for QsshConfig {
             qkd_ca_path: None,
             pq_algorithm: PqAlgorithm::Falcon512,
             key_rotation_interval: 3600,
+            security_tier: SecurityTier::default(),  // T2: Hardened PQ
             quantum_native: true,  // Default to quantum-native transport
         }
     }

@@ -1,7 +1,7 @@
 //! QSSH Client - Quantum-secure SSH replacement
 
 use clap::Parser;
-use qssh::{QsshConfig, PortForward, PqAlgorithm, QsshClient};
+use qssh::{QsshConfig, PortForward, PqAlgorithm, QsshClient, security_tiers::SecurityTier};
 use qssh::config::ConfigParser;
 use qssh::port_forward::{PortForwardManager, ForwardType};
 use log::info;
@@ -197,6 +197,7 @@ async fn main() {
         qkd_ca_path: args.qkd_ca.clone(),
         pq_algorithm,
         key_rotation_interval: 3600, // 1 hour
+        security_tier: SecurityTier::default(),
         quantum_native,
     };
     

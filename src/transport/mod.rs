@@ -11,13 +11,13 @@ use tokio::sync::Mutex;
 
 pub mod protocol;
 pub mod channel;
-pub mod quantum_native;
+pub mod quantum_resistant;
 
 pub use protocol::*;
 pub use channel::*;
-pub use quantum_native::*;
+pub use quantum_resistant::*;
 
-/// Unified transport trait for both classical and quantum-native transports
+/// Unified transport trait for both classical and quantum-resistant transports
 #[async_trait::async_trait]
 pub trait QsshTransport: Send + Sync {
     /// Send a message

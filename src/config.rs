@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::{Result, QsshError, QsshConfig, PortForward, PqAlgorithm};
+use crate::{Result, QsshError, QsshConfig, PortForward, PqAlgorithm, security_tiers::SecurityTier};
 
 /// Host configuration from config file
 #[derive(Debug, Clone)]
@@ -303,6 +303,7 @@ impl ConfigParser {
             qkd_ca_path: host_config.qkd_ca_path,
             pq_algorithm: host_config.pq_algorithm.unwrap_or(PqAlgorithm::Falcon512),
             key_rotation_interval: host_config.key_rotation_interval.unwrap_or(3600),
+            security_tier: SecurityTier::default(),
             quantum_native: true,  // Default to quantum-native transport
         })
     }

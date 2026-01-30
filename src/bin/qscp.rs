@@ -1,7 +1,7 @@
 //! QSCP - Quantum-secure file copy
 
 use clap::Parser;
-use qssh::{QsshConfig, PqAlgorithm, QsshClient};
+use qssh::{QsshConfig, PqAlgorithm, QsshClient, security_tiers::SecurityTier};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -88,12 +88,13 @@ async fn upload_files(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         qkd_ca_path: None,
         pq_algorithm: PqAlgorithm::Falcon512,
         key_rotation_interval: 3600,
+        security_tier: SecurityTier::default(),
         quantum_native: true,
     };
-    
+
     let mut client = QsshClient::new(config);
     client.connect().await?;
-    
+
     // Upload each file
     for source in &args.source {
         let path = Path::new(source);
@@ -132,12 +133,13 @@ async fn download_files(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         qkd_ca_path: None,
         pq_algorithm: PqAlgorithm::Falcon512,
         key_rotation_interval: 3600,
+        security_tier: SecurityTier::default(),
         quantum_native: true,
     };
-    
+
     let mut client = QsshClient::new(config);
     client.connect().await?;
-    
+
     // Download file
     download_file(&client, &remote_path, &args.destination, args.progress).await?;
     
