@@ -12,7 +12,6 @@ use tokio::sync::{Mutex, RwLock};
 use rand::RngCore;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use zeroize::Zeroize;
 
 /// Fixed frame size - all frames look identical
 pub const QUANTUM_FRAME_SIZE: usize = 768;
@@ -78,6 +77,12 @@ struct EncryptedHeader {
     frame_type: u8,        // Frame type (encrypted)
 }
 
+/// Size of the KEM ciphertext (Falcon PK + ephemeral secret + SPHINCS+ signature)
+const KEM_CIPHERTEXT_SIZE: usize = 897 + 64 + 16976; // 17937 bytes
+
+/// Handshake message header size (4 bytes for length)
+const HANDSHAKE_HEADER_SIZE: usize = 4;
+
 impl QuantumTransport {
     /// Create quantum transport after successful KEM handshake
     pub async fn new(
@@ -88,13 +93,13 @@ impl QuantumTransport {
     ) -> Result<Self> {
         log::info!("Creating quantum-native transport (768-byte indistinguishable frames)");
 
-        let (reader, writer) = stream.into_split();
+        let (mut reader, mut writer) = stream.into_split();
 
-        // Perform quantum KEM handshake
+        // Perform quantum KEM handshake with network exchange
         let (shared_secret, auth_key) = if is_client {
-            Self::client_kem_handshake(kem, peer_pk).await?
+            Self::client_kem_handshake(kem, peer_pk, &mut writer).await?
         } else {
-            Self::server_kem_handshake(kem, peer_pk).await?
+            Self::server_kem_handshake(kem, peer_pk, &mut reader).await?
         };
 
         // Derive symmetric keys
@@ -123,13 +128,36 @@ impl QuantumTransport {
     }
 
     /// Client-side KEM handshake
-    async fn client_kem_handshake(kem: &QuantumKem, server_pk: &[u8]) -> Result<(Vec<u8>, [u8; 32])> {
+    ///
+    /// The client performs encapsulation using the server's public key and sends
+    /// the resulting ciphertext to the server. Both parties derive the same
+    /// shared secret from the KEM operation.
+    async fn client_kem_handshake(
+        kem: &QuantumKem,
+        server_pk: &[u8],
+        writer: &mut OwnedWriteHalf,
+    ) -> Result<(Vec<u8>, [u8; 32])> {
         log::debug!("Client: performing SPHINCS+/Falcon KEM handshake");
 
         // Encapsulate to server's public key
         let (ciphertext, shared_secret) = kem.encapsulate(server_pk)?;
 
-        log::debug!("Client: KEM encapsulation successful, shared secret: {} bytes", shared_secret.len());
+        log::debug!(
+            "Client: KEM encapsulation successful, ciphertext: {} bytes, shared secret: {} bytes",
+            ciphertext.len(),
+            shared_secret.len()
+        );
+
+        // Send ciphertext length and ciphertext to server
+        let ciphertext_len = ciphertext.len() as u32;
+        writer.write_all(&ciphertext_len.to_be_bytes()).await
+            .map_err(|e| QsshError::Io(e))?;
+        writer.write_all(&ciphertext).await
+            .map_err(|e| QsshError::Io(e))?;
+        writer.flush().await
+            .map_err(|e| QsshError::Io(e))?;
+
+        log::debug!("Client: KEM ciphertext sent to server");
 
         // Expand shared secret to session keys
         let mut expanded = vec![0u8; 96];
@@ -143,21 +171,55 @@ impl QuantumTransport {
     }
 
     /// Server-side KEM handshake
-    async fn server_kem_handshake(kem: &QuantumKem, client_pk: &[u8]) -> Result<(Vec<u8>, [u8; 32])> {
+    ///
+    /// The server receives the ciphertext from the client and decapsulates it
+    /// using its own secret key to derive the same shared secret that the
+    /// client computed during encapsulation.
+    async fn server_kem_handshake(
+        kem: &QuantumKem,
+        client_pk: &[u8],
+        reader: &mut OwnedReadHalf,
+    ) -> Result<(Vec<u8>, [u8; 32])> {
         log::debug!("Server: performing SPHINCS+/Falcon KEM handshake");
 
-        // For server, we need to receive the client's encapsulation
-        // In a real implementation, this would be sent over the wire
-        // For now, simulate the handshake completion
+        // Read ciphertext length
+        let mut len_bytes = [0u8; HANDSHAKE_HEADER_SIZE];
+        reader.read_exact(&mut len_bytes).await
+            .map_err(|e| QsshError::Io(e))?;
+        let ciphertext_len = u32::from_be_bytes(len_bytes) as usize;
 
-        // Generate a shared secret (in real implementation, this comes from decapsulation)
-        let mut shared_secret = vec![0u8; 32];
-        rand::thread_rng().fill_bytes(&mut shared_secret);
+        // Validate ciphertext length to prevent DoS
+        if ciphertext_len == 0 || ciphertext_len > KEM_CIPHERTEXT_SIZE + 1024 {
+            return Err(QsshError::Protocol(format!(
+                "Invalid KEM ciphertext size: {} (expected around {})",
+                ciphertext_len,
+                KEM_CIPHERTEXT_SIZE
+            )));
+        }
 
-        // Expand to session keys
+        // Read ciphertext
+        let mut ciphertext = vec![0u8; ciphertext_len];
+        reader.read_exact(&mut ciphertext).await
+            .map_err(|e| QsshError::Io(e))?;
+
+        log::debug!(
+            "Server: received KEM ciphertext: {} bytes",
+            ciphertext.len()
+        );
+
+        // Decapsulate to derive shared secret
+        let shared_secret = kem.decapsulate(&ciphertext, client_pk)?;
+
+        log::debug!(
+            "Server: KEM decapsulation successful, shared secret: {} bytes",
+            shared_secret.len()
+        );
+
+        // Expand shared secret to session keys (same KDF as client)
         let mut expanded = vec![0u8; 96];
         Self::kdf(&shared_secret, b"QSSH-quantum-session", &mut expanded)?;
 
+        // Extract auth key
         let mut auth_key = [0u8; 32];
         auth_key.copy_from_slice(&expanded[64..96]);
 
