@@ -328,8 +328,9 @@ impl<'a> ClientHandshake<'a> {
             let sk = falcon512::SecretKey::from_bytes(priv_key)
                 .map_err(|e| QsshError::Crypto(format!("Invalid identity key: {:?}", e)))?;
 
-            // Sign the session ID
-            let sig = falcon512::sign(&session_id, &sk);
+            // Sign the session ID with detached signature (signature only, not signed message)
+            use pqcrypto_traits::sign::DetachedSignature;
+            let sig = falcon512::detached_sign(&session_id, &sk);
             let signature = sig.as_bytes().to_vec();
 
             log::debug!("Session ID signed: {} bytes", signature.len());
