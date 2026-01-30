@@ -22,12 +22,18 @@ pub struct QsshServerConfig {
     pub qkd_enabled: bool,
     pub qkd_endpoint: Option<String>,
     pub quantum_native: bool,
+    /// Path to QKD client certificate
+    pub qkd_cert_path: Option<String>,
+    /// Path to QKD client private key
+    pub qkd_key_path: Option<String>,
+    /// Path to QKD CA certificate
+    pub qkd_ca_path: Option<String>,
 }
 
 impl QsshServerConfig {
     pub fn new(listen_addr: &str) -> Result<Self> {
         let host_key = PqKeyExchange::new()?;
-        
+
         Ok(Self {
             listen_addr: listen_addr.to_string(),
             host_key: Arc::new(host_key),
@@ -36,9 +42,12 @@ impl QsshServerConfig {
             qkd_enabled: false,
             qkd_endpoint: None,
             quantum_native: true,  // Default to quantum-native
+            qkd_cert_path: None,
+            qkd_key_path: None,
+            qkd_ca_path: None,
         })
     }
-    
+
     pub fn add_authorized_key(&mut self, username: &str, public_key: Vec<u8>) {
         self.authorized_keys.insert(username.to_string(), public_key);
     }

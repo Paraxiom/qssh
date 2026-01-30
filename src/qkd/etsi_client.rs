@@ -45,25 +45,21 @@ impl EtsiQkdClient {
                 log::info!("Loading PKCS#12 certificate from {:?}", cert_path);
                 let pkcs12_data = fs::read(cert_path)
                     .map_err(|e| QsshError::Qkd(format!("Failed to read PKCS#12: {}", e)))?;
-                
-                // Try common passwords for PKCS#12 files
-                let passwords = ["MySecret", "password", ""];
-                let mut identity_created = false;
-                
-                for password in &passwords {
-                    match reqwest::Identity::from_pkcs12_der(&pkcs12_data, password) {
-                        Ok(identity) => {
-                            log::info!("Successfully loaded PKCS#12 with password");
-                            client_builder = client_builder.identity(identity);
-                            identity_created = true;
-                            break;
-                        }
-                        Err(_) => continue,
+
+                // Get PKCS#12 password from environment variable
+                let password = std::env::var("QSSH_PKCS12_PASSWORD")
+                    .unwrap_or_default();
+
+                match reqwest::Identity::from_pkcs12_der(&pkcs12_data, &password) {
+                    Ok(identity) => {
+                        log::info!("Successfully loaded PKCS#12 certificate");
+                        client_builder = client_builder.identity(identity);
                     }
-                }
-                
-                if !identity_created {
-                    return Err(QsshError::Qkd("Failed to load PKCS#12 with any known password".into()));
+                    Err(e) => {
+                        return Err(QsshError::Qkd(format!(
+                            "Failed to load PKCS#12 certificate. Set QSSH_PKCS12_PASSWORD environment variable. Error: {}", e
+                        )));
+                    }
                 }
             } else if key_path.exists() {
                 // Load separate cert and key files

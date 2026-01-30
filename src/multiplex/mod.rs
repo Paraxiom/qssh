@@ -82,7 +82,7 @@ impl ControlMaster {
         let listener = UnixListener::bind(&self.socket_path)
             .map_err(|e| QsshError::Connection(format!("Failed to bind control socket: {}", e)))?;
 
-        println!("Control master listening on: {:?}", self.socket_path);
+        log::info!("Control master listening on: {:?}", self.socket_path);
 
         loop {
             match listener.accept().await {
@@ -93,12 +93,12 @@ impl ControlMaster {
 
                     tokio::spawn(async move {
                         if let Err(e) = handle_control_client(stream, sessions, transport, next_id).await {
-                            eprintln!("Control client error: {}", e);
+                            log::error!("Control client error: {}", e);
                         }
                     });
                 }
                 Err(e) => {
-                    eprintln!("Failed to accept control connection: {}", e);
+                    log::error!("Failed to accept control connection: {}", e);
                 }
             }
         }

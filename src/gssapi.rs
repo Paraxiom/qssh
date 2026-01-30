@@ -1,12 +1,21 @@
-//! WARNING: This module contains placeholder implementations - DO NOT USE IN PRODUCTION
 //! GSSAPI/Kerberos Authentication Support
 //!
-//! Implements GSSAPI authentication for enterprise environments with Kerberos
+//! **WARNING: This module contains placeholder implementations and is NOT functional.**
+//! GSSAPI authentication is not yet implemented in QSSH.
+//!
+//! To enable enterprise Kerberos authentication, this module needs to be implemented
+//! using a proper GSSAPI library such as `gssapi` or `libgssapi` crates.
+//!
+//! All public functions will return `QsshError::Protocol` with a clear error message
+//! indicating that GSSAPI is not available.
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime};
 use crate::{Result, QsshError};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+
+/// Error message for unimplemented GSSAPI functionality
+const GSSAPI_NOT_IMPLEMENTED: &str = "GSSAPI authentication is not implemented. \
+    Use public key or password authentication instead.";
 
 /// GSSAPI mechanism types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +53,9 @@ impl GssapiMechanism {
 }
 
 /// GSSAPI context for authentication
+///
+/// **NOTE: This is a placeholder structure. GSSAPI authentication is not implemented.**
+#[allow(dead_code)]
 pub struct GssapiContext {
     /// Selected mechanism
     mechanism: GssapiMechanism,
@@ -53,13 +65,13 @@ pub struct GssapiContext {
     service_name: String,
     /// Client principal name
     client_name: Option<String>,
-    /// Session key
+    /// Session key (unused - GSSAPI not implemented)
     session_key: Option<Vec<u8>>,
-    /// Context flags
+    /// Context flags (unused - GSSAPI not implemented)
     flags: ContextFlags,
     /// Delegation credentials
     delegated_creds: Option<DelegatedCredentials>,
-    /// Message integrity check
+    /// Message integrity check (unused - GSSAPI not implemented)
     mic_token: Option<Vec<u8>>,
 }
 
@@ -136,332 +148,24 @@ impl GssapiContext {
     }
 
     /// Initialize security context (client)
-    pub fn init_sec_context(&mut self, input_token: Option<&[u8]>) -> Result<GssapiToken> {
-        match self.state {
-            ContextState::Initial => {
-                // Generate initial token based on mechanism
-                let token = match self.mechanism {
-                    GssapiMechanism::Kerberos5 => self.init_kerberos_context()?,
-                    GssapiMechanism::Ntlm => self.init_ntlm_context()?,
-                    GssapiMechanism::Spnego => self.init_spnego_context()?,
-                };
-
-                self.state = ContextState::WaitingForServer;
-                Ok(token)
-            }
-            ContextState::WaitingForServer => {
-                if let Some(server_token) = input_token {
-                    // Process server token
-                    let response = self.process_server_token(server_token)?;
-
-                    if response.complete {
-                        self.state = ContextState::Established;
-                    }
-
-                    Ok(response)
-                } else {
-                    Err(QsshError::Protocol("Expected server token".into()))
-                }
-            }
-            ContextState::Established => {
-                Ok(GssapiToken {
-                    data: Vec::new(),
-                    complete: true,
-                    mechanism: self.mechanism,
-                })
-            }
-            _ => Err(QsshError::Protocol("Invalid context state".into())),
-        }
+    ///
+    /// **NOTE: This is a placeholder implementation. GSSAPI is not functional.**
+    pub fn init_sec_context(&mut self, _input_token: Option<&[u8]>) -> Result<GssapiToken> {
+        // GSSAPI is not implemented - return a clear error
+        Err(QsshError::Protocol(GSSAPI_NOT_IMPLEMENTED.into()))
     }
 
     /// Accept security context (server)
-    pub fn accept_sec_context(&mut self, input_token: &[u8]) -> Result<GssapiToken> {
-        match self.state {
-            ContextState::Initial => {
-                // Process client's initial token
-                let response = self.process_client_token(input_token)?;
-
-                if response.complete {
-                    self.state = ContextState::Established;
-                } else {
-                    self.state = ContextState::WaitingForClient;
-                }
-
-                Ok(response)
-            }
-            ContextState::WaitingForClient => {
-                // Process additional client token
-                let response = self.process_client_token(input_token)?;
-
-                if response.complete {
-                    self.state = ContextState::Established;
-                }
-
-                Ok(response)
-            }
-            ContextState::Established => {
-                Ok(GssapiToken {
-                    data: Vec::new(),
-                    complete: true,
-                    mechanism: self.mechanism,
-                })
-            }
-            _ => Err(QsshError::Protocol("Invalid context state".into())),
-        }
-    }
-
-    /// Initialize Kerberos context
-    fn init_kerberos_context(&mut self) -> Result<GssapiToken> {
-        // Simplified Kerberos initialization
-        // In production, this would use actual Kerberos libraries
-
-        // Create AP-REQ message
-        let ap_req = KerberosApReq {
-            pvno: 5,
-            msg_type: 14, // AP-REQ
-            ap_options: 0x40000000, // Mutual authentication
-            ticket: self.get_service_ticket()?,
-            authenticator: self.create_authenticator()?,
-        };
-
-        Ok(GssapiToken {
-            data: encode_kerberos_message(&ap_req)?,
-            complete: false,
-            mechanism: GssapiMechanism::Kerberos5,
-        })
-    }
-
-    /// Initialize NTLM context
-    fn init_ntlm_context(&mut self) -> Result<GssapiToken> {
-        // Simplified NTLM Type 1 message
-        let type1 = NtlmType1Message {
-            signature: b"NTLMSSP\0".to_vec(),
-            message_type: 1,
-            flags: 0x00000207, // Negotiate flags
-            domain: String::new(),
-            workstation: hostname::get()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string(),
-        };
-
-        Ok(GssapiToken {
-            data: encode_ntlm_message(&type1)?,
-            complete: false,
-            mechanism: GssapiMechanism::Ntlm,
-        })
-    }
-
-    /// Initialize SPNEGO context
-    fn init_spnego_context(&mut self) -> Result<GssapiToken> {
-        // SPNEGO negotiation token
-        let nego = SpnegoNegTokenInit {
-            mech_types: vec![
-                GssapiMechanism::Kerberos5.oid().to_vec(),
-                GssapiMechanism::Ntlm.oid().to_vec(),
-            ],
-            req_flags: self.flags.to_bits(),
-            mech_token: None,
-            mech_list_mic: None,
-        };
-
-        Ok(GssapiToken {
-            data: encode_spnego_message(&nego)?,
-            complete: false,
-            mechanism: GssapiMechanism::Spnego,
-        })
-    }
-
-    /// Process server token
-    fn process_server_token(&mut self, token: &[u8]) -> Result<GssapiToken> {
-        match self.mechanism {
-            GssapiMechanism::Kerberos5 => self.process_kerberos_response(token),
-            GssapiMechanism::Ntlm => self.process_ntlm_challenge(token),
-            GssapiMechanism::Spnego => self.process_spnego_response(token),
-        }
-    }
-
-    /// Process client token
-    fn process_client_token(&mut self, token: &[u8]) -> Result<GssapiToken> {
-        match self.mechanism {
-            GssapiMechanism::Kerberos5 => self.process_kerberos_request(token),
-            GssapiMechanism::Ntlm => self.process_ntlm_auth(token),
-            GssapiMechanism::Spnego => self.process_spnego_request(token),
-        }
-    }
-
-    /// Process Kerberos response (AP-REP)
-    fn process_kerberos_response(&mut self, token: &[u8]) -> Result<GssapiToken> {
-        // Derive session key from token using SHA256
-        use sha2::{Sha256, Digest};
-
-        let mut hasher = Sha256::new();
-        hasher.update(b"qssh-gssapi-session");
-        hasher.update(token);
-        let hash = hasher.finalize();
-        let session_key = hash.to_vec();
-
-        self.session_key = Some(session_key);
-
-        Ok(GssapiToken {
-            data: Vec::new(),
-            complete: true,
-            mechanism: GssapiMechanism::Kerberos5,
-        })
-    }
-
-    /// Process Kerberos request (AP-REQ)
-    fn process_kerberos_request(&mut self, token: &[u8]) -> Result<GssapiToken> {
-        // Extract client name from token (simplified)
-        let client_name = if token.len() > 20 {
-            format!("user_{}@REALM.COM", hex::encode(&token[0..4]))
-        } else {
-            "user@REALM.COM".to_string()
-        };
-        self.client_name = Some(client_name);
-
-        // Derive session key from token
-        use sha2::{Sha256, Digest};
-        let mut hasher = Sha256::new();
-        hasher.update(b"qssh-kerberos-session");
-        hasher.update(token);
-        hasher.update(self.client_name.as_ref().unwrap_or(&String::new()).as_bytes());
-        let hash = hasher.finalize();
-        let session_key = hash.to_vec();
-
-        self.session_key = Some(session_key);
-
-        // Create AP-REP response
-        let ap_rep = KerberosApRep {
-            pvno: 5,
-            msg_type: 15, // AP-REP
-            enc_part: Vec::new(), // Would contain encrypted part
-        };
-
-        Ok(GssapiToken {
-            data: encode_kerberos_message(&ap_rep)?,
-            complete: true,
-            mechanism: GssapiMechanism::Kerberos5,
-        })
-    }
-
-    /// Process NTLM Type 2 challenge
-    fn process_ntlm_challenge(&mut self, token: &[u8]) -> Result<GssapiToken> {
-        // Parse Type 2 message and create Type 3 response
-        let type3 = NtlmType3Message {
-            signature: b"NTLMSSP\0".to_vec(),
-            message_type: 3,
-            lm_response: Vec::new(),
-            ntlm_response: Vec::new(),
-            domain: String::new(),
-            username: whoami::username(),
-            workstation: hostname::get()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string(),
-            session_key: Vec::new(),
-        };
-
-        Ok(GssapiToken {
-            data: encode_ntlm_message(&type3)?,
-            complete: true,
-            mechanism: GssapiMechanism::Ntlm,
-        })
-    }
-
-    /// Process NTLM authentication
-    fn process_ntlm_auth(&mut self, _token: &[u8]) -> Result<GssapiToken> {
-        // Verify NTLM credentials
-        self.client_name = Some("DOMAIN\\user".to_string());
-
-        Ok(GssapiToken {
-            data: Vec::new(),
-            complete: true,
-            mechanism: GssapiMechanism::Ntlm,
-        })
-    }
-
-    /// Process SPNEGO response
-    fn process_spnego_response(&mut self, _token: &[u8]) -> Result<GssapiToken> {
-        Ok(GssapiToken {
-            data: Vec::new(),
-            complete: true,
-            mechanism: GssapiMechanism::Spnego,
-        })
-    }
-
-    /// Process SPNEGO request
-    fn process_spnego_request(&mut self, _token: &[u8]) -> Result<GssapiToken> {
-        Ok(GssapiToken {
-            data: Vec::new(),
-            complete: true,
-            mechanism: GssapiMechanism::Spnego,
-        })
-    }
-
-    /// Get service ticket (Kerberos)
-    fn get_service_ticket(&self) -> Result<Vec<u8>> {
-        // Would fetch from credential cache
-        Ok(vec![0; 256]) // Placeholder ticket
-    }
-
-    /// Create authenticator (Kerberos)
-    fn create_authenticator(&self) -> Result<Vec<u8>> {
-        // Would create encrypted authenticator
-        Ok(vec![0; 128]) // Placeholder authenticator
-    }
-
-    /// Create message integrity check token
-    pub fn get_mic(&self, message: &[u8]) -> Result<Vec<u8>> {
-        if !self.is_established() {
-            return Err(QsshError::Protocol("Context not established".into()));
-        }
-
-        // Simplified MIC calculation
-        use sha2::{Sha256, Digest};
-        let mut hasher = Sha256::new();
-        hasher.update(message);
-        if let Some(key) = &self.session_key {
-            hasher.update(key);
-        }
-        Ok(hasher.finalize().to_vec())
-    }
-
-    /// Verify message integrity check token
-    pub fn verify_mic(&self, message: &[u8], mic: &[u8]) -> Result<bool> {
-        let expected = self.get_mic(message)?;
-        Ok(expected == mic)
-    }
-
-    /// Wrap message for confidentiality
-    pub fn wrap(&self, message: &[u8], encrypt: bool) -> Result<Vec<u8>> {
-        if !self.is_established() {
-            return Err(QsshError::Protocol("Context not established".into()));
-        }
-
-        if encrypt && self.flags.confidentiality {
-            // Would encrypt with session key
-            Ok(message.to_vec()) // Placeholder
-        } else {
-            // Just add integrity protection
-            let mic = self.get_mic(message)?;
-            let mut wrapped = message.to_vec();
-            wrapped.extend_from_slice(&mic);
-            Ok(wrapped)
-        }
-    }
-
-    /// Unwrap message
-    pub fn unwrap(&self, wrapped: &[u8]) -> Result<Vec<u8>> {
-        if !self.is_established() {
-            return Err(QsshError::Protocol("Context not established".into()));
-        }
-
-        // Simplified - would decrypt or verify integrity
-        Ok(wrapped.to_vec())
+    ///
+    /// **NOTE: This is a placeholder implementation. GSSAPI is not functional.**
+    pub fn accept_sec_context(&mut self, _input_token: &[u8]) -> Result<GssapiToken> {
+        // GSSAPI is not implemented - return a clear error
+        Err(QsshError::Protocol(GSSAPI_NOT_IMPLEMENTED.into()))
     }
 
     /// Check if context is established
+    ///
+    /// **NOTE: GSSAPI is not implemented, so this will always return false.**
     pub fn is_established(&self) -> bool {
         self.state == ContextState::Established
     }
@@ -474,6 +178,34 @@ impl GssapiContext {
     /// Get delegated credentials
     pub fn delegated_credentials(&self) -> Option<&DelegatedCredentials> {
         self.delegated_creds.as_ref()
+    }
+
+    /// Create message integrity check token
+    ///
+    /// **NOTE: GSSAPI is not implemented. This will return an error.**
+    pub fn get_mic(&self, _message: &[u8]) -> Result<Vec<u8>> {
+        Err(QsshError::Protocol(GSSAPI_NOT_IMPLEMENTED.into()))
+    }
+
+    /// Verify message integrity check token
+    ///
+    /// **NOTE: GSSAPI is not implemented. This will return an error.**
+    pub fn verify_mic(&self, _message: &[u8], _mic: &[u8]) -> Result<bool> {
+        Err(QsshError::Protocol(GSSAPI_NOT_IMPLEMENTED.into()))
+    }
+
+    /// Wrap message for confidentiality
+    ///
+    /// **NOTE: GSSAPI is not implemented. This will return an error.**
+    pub fn wrap(&self, _message: &[u8], _encrypt: bool) -> Result<Vec<u8>> {
+        Err(QsshError::Protocol(GSSAPI_NOT_IMPLEMENTED.into()))
+    }
+
+    /// Unwrap message
+    ///
+    /// **NOTE: GSSAPI is not implemented. This will return an error.**
+    pub fn unwrap(&self, _wrapped: &[u8]) -> Result<Vec<u8>> {
+        Err(QsshError::Protocol(GSSAPI_NOT_IMPLEMENTED.into()))
     }
 }
 
@@ -489,17 +221,22 @@ pub struct GssapiToken {
 }
 
 /// GSSAPI authenticator for SSH
+///
+/// **NOTE: This is a placeholder structure. GSSAPI authentication is not implemented.**
+#[allow(dead_code)]
 pub struct GssapiAuthenticator {
     /// Available mechanisms
     mechanisms: Vec<GssapiMechanism>,
     /// Active contexts
     contexts: HashMap<String, GssapiContext>,
-    /// Service name
+    /// Service name (unused - GSSAPI not implemented)
     service_name: String,
 }
 
 impl GssapiAuthenticator {
     /// Create new authenticator
+    ///
+    /// **NOTE: GSSAPI is not implemented. All authentication attempts will fail.**
     pub fn new(service_name: String) -> Self {
         Self {
             mechanisms: vec![
@@ -513,33 +250,24 @@ impl GssapiAuthenticator {
     }
 
     /// Start authentication
-    pub fn start_auth(&mut self, mechanism: GssapiMechanism, client: bool) -> Result<String> {
-        let context_id = generate_context_id();
-
-        let context = if client {
-            GssapiContext::new_client(self.service_name.clone(), mechanism)
-        } else {
-            GssapiContext::new_server(mechanism)
-        };
-
-        self.contexts.insert(context_id.clone(), context);
-        Ok(context_id)
+    ///
+    /// **NOTE: GSSAPI is not implemented. This will return an error.**
+    pub fn start_auth(&mut self, _mechanism: GssapiMechanism, _client: bool) -> Result<String> {
+        Err(QsshError::Protocol(GSSAPI_NOT_IMPLEMENTED.into()))
     }
 
     /// Continue authentication
-    pub fn continue_auth(&mut self, context_id: &str, input: Option<&[u8]>) -> Result<GssapiToken> {
-        let context = self.contexts.get_mut(context_id)
-            .ok_or_else(|| QsshError::Protocol("Invalid context ID".into()))?;
-
-        context.init_sec_context(input)
+    ///
+    /// **NOTE: GSSAPI is not implemented. This will return an error.**
+    pub fn continue_auth(&mut self, _context_id: &str, _input: Option<&[u8]>) -> Result<GssapiToken> {
+        Err(QsshError::Protocol(GSSAPI_NOT_IMPLEMENTED.into()))
     }
 
     /// Accept authentication
-    pub fn accept_auth(&mut self, context_id: &str, input: &[u8]) -> Result<GssapiToken> {
-        let context = self.contexts.get_mut(context_id)
-            .ok_or_else(|| QsshError::Protocol("Invalid context ID".into()))?;
-
-        context.accept_sec_context(input)
+    ///
+    /// **NOTE: GSSAPI is not implemented. This will return an error.**
+    pub fn accept_auth(&mut self, _context_id: &str, _input: &[u8]) -> Result<GssapiToken> {
+        Err(QsshError::Protocol(GSSAPI_NOT_IMPLEMENTED.into()))
     }
 
     /// Get established context
@@ -548,82 +276,20 @@ impl GssapiAuthenticator {
     }
 
     /// List available mechanisms
+    ///
+    /// **NOTE: While mechanisms are listed, GSSAPI authentication is not functional.**
     pub fn available_mechanisms(&self) -> &[GssapiMechanism] {
         &self.mechanisms
     }
 }
 
-// Message structures (simplified)
-
-struct KerberosApReq {
-    pvno: u8,
-    msg_type: u8,
-    ap_options: u32,
-    ticket: Vec<u8>,
-    authenticator: Vec<u8>,
-}
-
-struct KerberosApRep {
-    pvno: u8,
-    msg_type: u8,
-    enc_part: Vec<u8>,
-}
-
-struct NtlmType1Message {
-    signature: Vec<u8>,
-    message_type: u32,
-    flags: u32,
-    domain: String,
-    workstation: String,
-}
-
-struct NtlmType3Message {
-    signature: Vec<u8>,
-    message_type: u32,
-    lm_response: Vec<u8>,
-    ntlm_response: Vec<u8>,
-    domain: String,
-    username: String,
-    workstation: String,
-    session_key: Vec<u8>,
-}
-
-struct SpnegoNegTokenInit {
-    mech_types: Vec<Vec<u8>>,
-    req_flags: u32,
-    mech_token: Option<Vec<u8>>,
-    mech_list_mic: Option<Vec<u8>>,
-}
-
-// Helper functions
-
-fn generate_context_id() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let bytes: Vec<u8> = (0..16).map(|_| rng.gen()).collect();
-    hex::encode(bytes)
-}
-
-fn encode_kerberos_message<T>(_msg: &T) -> Result<Vec<u8>> {
-    Err(QsshError::Protocol(
-        "Kerberos message encoding not implemented".into()
-    ))
-}
-
-fn encode_ntlm_message<T>(_msg: &T) -> Result<Vec<u8>> {
-    Err(QsshError::Protocol(
-        "NTLM message encoding not implemented".into()
-    ))
-}
-
-fn encode_spnego_message<T>(_msg: &T) -> Result<Vec<u8>> {
-    Err(QsshError::Protocol(
-        "SPNEGO message encoding not implemented".into()
-    ))
-}
+// Note: Full GSSAPI implementation (Kerberos, NTLM, SPNEGO message structures
+// and encoding functions) has been removed as the feature is not functional.
+// When implementing GSSAPI support, use a proper GSSAPI library like `gssapi` or `libgssapi`.
 
 impl ContextFlags {
-    fn to_bits(&self) -> u32 {
+    /// Convert flags to bitmask (for protocol negotiation)
+    pub fn to_bits(&self) -> u32 {
         let mut bits = 0;
         if self.mutual_auth { bits |= 0x01; }
         if self.confidentiality { bits |= 0x02; }
@@ -648,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_context_creation() {
-        let mut client = GssapiContext::new_client("host/server.example.com".to_string(), GssapiMechanism::Kerberos5);
+        let client = GssapiContext::new_client("host/server.example.com".to_string(), GssapiMechanism::Kerberos5);
         assert!(!client.is_established());
 
         let server = GssapiContext::new_server(GssapiMechanism::Kerberos5);
@@ -656,13 +322,30 @@ mod tests {
     }
 
     #[test]
-    fn test_authenticator() {
+    fn test_authenticator_returns_error() {
+        // GSSAPI is not implemented, so authentication should return an error
         let mut auth = GssapiAuthenticator::new("host/server.example.com".to_string());
 
-        let context_id = auth.start_auth(GssapiMechanism::Kerberos5, true).unwrap();
-        assert!(auth.get_context(&context_id).is_some());
+        // start_auth should return an error since GSSAPI is not implemented
+        let result = auth.start_auth(GssapiMechanism::Kerberos5, true);
+        assert!(result.is_err());
 
+        // Mechanisms are still listed for protocol negotiation purposes
         assert_eq!(auth.available_mechanisms().len(), 3);
+    }
+
+    #[test]
+    fn test_init_sec_context_returns_error() {
+        let mut context = GssapiContext::new_client("host/server.example.com".to_string(), GssapiMechanism::Kerberos5);
+        let result = context.init_sec_context(None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_accept_sec_context_returns_error() {
+        let mut context = GssapiContext::new_server(GssapiMechanism::Kerberos5);
+        let result = context.accept_sec_context(&[0u8; 16]);
+        assert!(result.is_err());
     }
 
     #[test]

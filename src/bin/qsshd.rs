@@ -6,6 +6,24 @@ use std::process;
 use std::path::PathBuf;
 use tokio::fs;
 use base64::Engine;
+use serde::Deserialize;
+
+/// QKD configuration loaded from file
+#[derive(Debug, Deserialize)]
+struct QkdFileConfig {
+    /// QKD API endpoint URL
+    endpoint: Option<String>,
+    /// Path to client certificate
+    cert_path: Option<String>,
+    /// Path to client private key
+    key_path: Option<String>,
+    /// Path to CA certificate
+    ca_path: Option<String>,
+    /// Request timeout in milliseconds
+    timeout_ms: Option<u64>,
+    /// Minimum entropy threshold
+    min_entropy: Option<f64>,
+}
 
 #[derive(Parser, Debug)]
 #[clap(name = "qsshd")]
@@ -123,12 +141,33 @@ async fn main() {
     if args.qkd {
         log::info!("QKD support enabled");
         config.qkd_enabled = true;
-        // Default QKD endpoint for Toshiba device
-        config.qkd_endpoint = Some("https://192.168.0.4/api/v1".to_string());
-        
-        if let Some(qkd_config) = args.qkd_config {
-            log::info!("Loading QKD configuration from {:?}", qkd_config);
-            // TODO: Load QKD config from file
+
+        if let Some(qkd_config_path) = &args.qkd_config {
+            match load_qkd_config(qkd_config_path).await {
+                Ok(qkd_cfg) => {
+                    log::info!("Loaded QKD configuration from {:?}", qkd_config_path);
+                    if let Some(endpoint) = qkd_cfg.endpoint {
+                        config.qkd_endpoint = Some(endpoint);
+                    }
+                    if let Some(cert_path) = qkd_cfg.cert_path {
+                        config.qkd_cert_path = Some(cert_path);
+                    }
+                    if let Some(key_path) = qkd_cfg.key_path {
+                        config.qkd_key_path = Some(key_path);
+                    }
+                    if let Some(ca_path) = qkd_cfg.ca_path {
+                        config.qkd_ca_path = Some(ca_path);
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to load QKD config from {:?}: {}", qkd_config_path, e);
+                    process::exit(1);
+                }
+            }
+        } else {
+            log::warn!("QKD enabled but no config file specified. Using default endpoint.");
+            // Default QKD endpoint for Toshiba device
+            config.qkd_endpoint = Some("https://192.168.0.4/api/v1".to_string());
         }
     }
     
@@ -165,6 +204,29 @@ async fn main() {
             process::exit(1);
         }
     }
+}
+
+/// Load QKD configuration from file
+///
+/// Supports JSON format. Example config file:
+/// ```json
+/// {
+///     "endpoint": "https://192.168.0.4/api/v1/keys",
+///     "cert_path": "/etc/qssh/qkd-cert.pem",
+///     "key_path": "/etc/qssh/qkd-key.pem",
+///     "ca_path": "/etc/qssh/qkd-ca.pem",
+///     "timeout_ms": 5000
+/// }
+/// ```
+async fn load_qkd_config(path: &PathBuf) -> Result<QkdFileConfig, Box<dyn std::error::Error>> {
+    let contents = fs::read_to_string(path).await?;
+
+    let config: QkdFileConfig = serde_json::from_str(&contents)?;
+
+    log::debug!("QKD config: endpoint={:?}, cert={:?}, key={:?}, ca={:?}",
+        config.endpoint, config.cert_path, config.key_path, config.ca_path);
+
+    Ok(config)
 }
 
 /// Generate host keys
