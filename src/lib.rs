@@ -38,8 +38,6 @@ pub mod session;
 pub mod certificate;
 pub mod gssapi;
 pub mod security_tiers;
-#[cfg(feature = "drista")]
-pub mod drista_integration;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

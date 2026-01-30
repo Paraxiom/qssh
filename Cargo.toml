@@ -70,10 +70,6 @@ lz4 = "1.24"
 # qkd_client = { path = "../qkd_client", optional = true }
 winterfell = { version = "0.12.0", optional = true }
 
-# Drista blockchain integration (optional)
-jsonrpsee = { version = "0.24", features = ["http-client"], optional = true }
-sys-info = { version = "0.9", optional = true }
-
 # Terminal handling
 termios = "0.3"
 libc = "0.2"
@@ -125,11 +121,6 @@ multiplex = []  # Incomplete
 libp2p-transport = ["libp2p"]
 qkd = ["winterfell"]  # qkd_client disabled until path exists
 quantum-native = []  # Experimental 768-byte indistinguishable frames
-drista = ["jsonrpsee", "sys-info"]  # Drista blockchain integration
-
-[[example]]
-name = "drista_wallet_ui"
-required-features = ["drista"]
 
 [[example]]
 name = "quantum_harmony_validator"
