@@ -238,7 +238,12 @@ impl AuthorizedKeysManager {
 /// Create default authorized_keys manager for system
 pub fn system_authorized_keys() -> AuthorizedKeysManager {
     let base_path = std::env::var("QSSH_AUTH_PATH")
-        .unwrap_or_else(|_| "/home".to_string());
+        .unwrap_or_else(|_| {
+            #[cfg(target_os = "macos")]
+            { "/Users".to_string() }
+            #[cfg(not(target_os = "macos"))]
+            { "/home".to_string() }
+        });
 
     AuthorizedKeysManager::new(PathBuf::from(base_path))
 }
