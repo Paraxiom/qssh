@@ -98,6 +98,9 @@ pub struct QsshConfig {
 
     /// Key rotation interval (seconds)
     pub key_rotation_interval: u64,
+
+    /// Use quantum-native transport (indistinguishable frames)
+    pub quantum_native: bool,
 }
 
 impl Default for QsshConfig {
@@ -114,6 +117,7 @@ impl Default for QsshConfig {
             qkd_ca_path: None,
             pq_algorithm: PqAlgorithm::Falcon512,
             key_rotation_interval: 3600,
+            quantum_native: true,  // Default to quantum-native transport
         }
     }
 }

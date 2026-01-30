@@ -70,6 +70,14 @@ struct Args {
     /// Verbose output
     #[clap(short, long)]
     verbose: bool,
+
+    /// Use quantum-native transport (768-byte indistinguishable frames)
+    #[clap(long)]
+    quantum_native: bool,
+
+    /// Use classical transport (for compatibility)
+    #[clap(long)]
+    classical: bool,
 }
 
 #[tokio::main]
@@ -167,6 +175,15 @@ async fn main() {
         None
     };
 
+    // Determine transport type
+    let quantum_native = if args.classical {
+        false
+    } else if args.quantum_native {
+        true
+    } else {
+        true  // Default to quantum-native
+    };
+
     // Create configuration
     let config = QsshConfig {
         server: host.clone(),
@@ -180,10 +197,16 @@ async fn main() {
         qkd_ca_path: args.qkd_ca.clone(),
         pq_algorithm,
         key_rotation_interval: 3600, // 1 hour
+        quantum_native,
     };
     
     info!("Connecting to {} as {}...", host, username);
     info!("Using post-quantum algorithm: {:?}", pq_algorithm);
+    if quantum_native {
+        info!("Transport: Quantum-native (768-byte indistinguishable frames)");
+    } else {
+        info!("Transport: Classical (variable-size frames)");
+    }
     
     if args.qkd {
         info!("QKD enabled");

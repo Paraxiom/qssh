@@ -90,6 +90,7 @@ impl ProxyConnection {
             qkd_ca_path: None,
             pq_algorithm: crate::PqAlgorithm::Falcon512,
             key_rotation_interval: 3600,
+            quantum_native: true,
         });
 
         // Connect to first jump host
@@ -131,6 +132,7 @@ impl ProxyConnection {
             qkd_ca_path: None,
             pq_algorithm: crate::PqAlgorithm::Falcon512,
             key_rotation_interval: 3600,
+            quantum_native: true,
         });
 
         Ok(new_client)

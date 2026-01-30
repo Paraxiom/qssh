@@ -88,6 +88,7 @@ async fn upload_files(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         qkd_ca_path: None,
         pq_algorithm: PqAlgorithm::Falcon512,
         key_rotation_interval: 3600,
+        quantum_native: true,
     };
     
     let mut client = QsshClient::new(config);
@@ -131,6 +132,7 @@ async fn download_files(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         qkd_ca_path: None,
         pq_algorithm: PqAlgorithm::Falcon512,
         key_rotation_interval: 3600,
+        quantum_native: true,
     };
     
     let mut client = QsshClient::new(config);

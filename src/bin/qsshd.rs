@@ -47,6 +47,14 @@ struct Args {
     /// Daemonize (run in background)
     #[clap(short, long)]
     daemon: bool,
+
+    /// Use quantum-native transport (768-byte indistinguishable frames)
+    #[clap(long)]
+    quantum_native: bool,
+
+    /// Use classical transport (for compatibility)
+    #[clap(long)]
+    classical: bool,
 }
 
 #[tokio::main]
@@ -80,6 +88,16 @@ async fn main() {
     };
     
     config.max_connections = args.max_connections;
+
+    // Determine transport type
+    let quantum_native = if args.classical {
+        false
+    } else if args.quantum_native {
+        true
+    } else {
+        true  // Default to quantum-native
+    };
+    config.quantum_native = quantum_native;
     
     // Load authorized keys
     if args.authorized_keys.exists() {
@@ -126,6 +144,11 @@ async fn main() {
     
     log::info!("Starting QSSH server on {}", args.listen);
     log::info!("Post-quantum algorithms: SPHINCS+, Falcon");
+    if quantum_native {
+        log::info!("Transport: Quantum-native (768-byte indistinguishable frames)");
+    } else {
+        log::info!("Transport: Classical (variable-size frames)");
+    }
     if args.qkd {
         log::info!("QKD: Enabled");
     } else {
