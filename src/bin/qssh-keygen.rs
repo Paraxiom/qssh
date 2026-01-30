@@ -133,13 +133,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
     });
 
+    let algo_name = match algorithm {
+        PqAlgorithm::Falcon512 => "falcon512",
+        PqAlgorithm::Falcon1024 => "falcon1024",
+        PqAlgorithm::SphincsPlus => "sphincs+",
+    };
+
     let public_line = format!(
         "qssh-{} {} {}\n",
-        match algorithm {
-            PqAlgorithm::Falcon512 => "falcon512",
-            PqAlgorithm::SphincsPlus => "sphincs+",
-            _ => panic!("Unsupported algorithm"),
-        },
+        algo_name,
         base64::engine::general_purpose::STANDARD.encode(&public_key),
         comment
     );

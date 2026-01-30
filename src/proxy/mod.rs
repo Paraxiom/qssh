@@ -146,7 +146,7 @@ impl ProxyConnection {
         let channel = client.open_direct_tcpip(host, port).await?;
 
         // Return the stream for the channel
-        Ok(channel.into_stream())
+        channel.into_stream()
     }
 
     /// Connect using ProxyCommand
@@ -275,19 +275,24 @@ impl QsshClient {
 
 /// Direct TCP/IP channel
 pub struct DirectTcpipChannel {
-    // Channel implementation details
+    stream: Option<TcpStream>,
 }
 
 impl DirectTcpipChannel {
     fn new() -> Self {
-        Self {}
+        Self { stream: None }
+    }
+
+    /// Create a channel with an established stream
+    pub fn with_stream(stream: TcpStream) -> Self {
+        Self { stream: Some(stream) }
     }
 
     /// Convert channel to TcpStream
-    pub fn into_stream(self) -> TcpStream {
-        // This would return the actual stream from the channel
-        // Placeholder for now
-        panic!("DirectTcpipChannel::into_stream not fully implemented")
+    pub fn into_stream(self) -> Result<TcpStream> {
+        self.stream.ok_or_else(|| {
+            QsshError::Protocol("DirectTcpipChannel: stream not established (ProxyJump not fully implemented)".into())
+        })
     }
 }
 

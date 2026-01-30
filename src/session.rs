@@ -141,11 +141,12 @@ impl SessionCache {
         let nonce = generate_nonce();
         let encrypted_state = encrypt_state(&state_bytes, &encryption_key, &nonce)?;
 
-        // Create encrypted keys placeholder (would be actual keys in production)
+        // Derive session keys from the ticket encryption key
+        let salt = generate_salt();
         let session_keys = EncryptedKeys {
-            symmetric_key: vec![0; 32],
-            mac_key: vec![0; 32],
-            salt: generate_salt(),
+            symmetric_key: derive_session_key(&encryption_key, &salt, b"symmetric"),
+            mac_key: derive_session_key(&encryption_key, &salt, b"mac"),
+            salt,
         };
 
         // Create ticket
@@ -440,14 +441,34 @@ fn derive_ticket_key(session_id: &str) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
-fn encrypt_state(data: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>> {
-    // Simplified - would use actual encryption
-    Ok(data.to_vec())
+fn derive_session_key(master_key: &[u8], salt: &[u8], context: &[u8]) -> Vec<u8> {
+    use hkdf::Hkdf;
+    let hk = Hkdf::<Sha256>::new(Some(salt), master_key);
+    let mut output = vec![0u8; 32];
+    hk.expand(context, &mut output).expect("HKDF expand failed");
+    output
 }
 
-fn decrypt_state(data: &[u8], _key: &[u8], _nonce: &[u8]) -> Result<Vec<u8>> {
-    // Simplified - would use actual decryption
-    Ok(data.to_vec())
+fn encrypt_state(data: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>> {
+    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
+    use aes_gcm::aead::generic_array::GenericArray;
+
+    let cipher = Aes256Gcm::new(GenericArray::from_slice(key));
+    let nonce = GenericArray::from_slice(nonce);
+
+    cipher.encrypt(nonce, data)
+        .map_err(|e| QsshError::Crypto(format!("Session state encryption failed: {}", e)))
+}
+
+fn decrypt_state(data: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>> {
+    use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
+    use aes_gcm::aead::generic_array::GenericArray;
+
+    let cipher = Aes256Gcm::new(GenericArray::from_slice(key));
+    let nonce = GenericArray::from_slice(nonce);
+
+    cipher.decrypt(nonce, data)
+        .map_err(|e| QsshError::Crypto(format!("Session state decryption failed: {}", e)))
 }
 
 #[cfg(test)]
