@@ -2,10 +2,10 @@
 name = "qssh"
 version = "0.1.0"
 edition = "2021"
-authors = ["QuantumVerse Protocols"]
+authors = ["Paraxiom"]
 license = "MIT OR Apache-2.0"
 description = "Post-quantum secure shell with NIST PQC algorithms (Falcon, SPHINCS+, ML-KEM), configurable security tiers, and quantum-resistant protocol design"
-repository = "https://github.com/QuantumVerseProtocols/qssh"
+repository = "https://github.com/Paraxiom/qssh"
 readme = "README.md"
 
 [workspace]
@@ -14,13 +14,19 @@ readme = "README.md"
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }
 
-# Post-quantum cryptography - Using Falcon instead of Kyber
+# Post-quantum cryptography
 pqcrypto = "0.17"
 pqcrypto-traits = "0.3"
 pqcrypto-sphincsplus = "0.5"
 pqcrypto-falcon = "0.2"
-pqcrypto-kyber = "0.4"
 pqcrypto-dilithium = "0.5"
+
+# ML-KEM (FIPS 203) - replaces vulnerable Kyber
+ml-kem = "0.2"
+kem = "0.3.0-pre.0"
+
+# Classical crypto for hybrid mode (optional)
+x25519-dalek = { version = "2.0", features = ["static_secrets"], optional = true }
 
 # Encryption
 aes-gcm = "0.10"
@@ -121,6 +127,7 @@ multiplex = []  # Incomplete
 libp2p-transport = ["libp2p"]
 qkd = ["winterfell"]  # qkd_client disabled until path exists
 quantum-native = []  # Experimental 768-byte indistinguishable frames
+hybrid-kex = ["x25519-dalek"]  # X25519+ML-KEM hybrid key exchange
 
 [[example]]
 name = "quantum_harmony_validator"

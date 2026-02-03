@@ -1,12 +1,15 @@
 //! QSSH handshake implementation
 
 use crate::{
-    Result, QsshError, QsshConfig, PqAlgorithm,
+    Result, QsshError, QsshConfig, PqAlgorithm, KexAlgorithm,
     crypto::{PqKeyExchange, SymmetricCrypto, SessionKeyDerivation},
-    transport::{Transport, Message, ClientHelloMessage, ServerHelloMessage, 
+    crypto::mlkem::{MlKem768KeyPair, MlKem1024KeyPair, mlkem768_encapsulate, mlkem1024_encapsulate, derive_session_material},
+    transport::{Transport, Message, ClientHelloMessage, ServerHelloMessage,
                 KeyExchangeMessage, AuthMessage, AuthMethod, PROTOCOL_VERSION},
     auth::AuthorizedKeysManager,
 };
+#[cfg(feature = "hybrid-kex")]
+use crate::crypto::hybrid::{HybridKeyPair, HybridClientExchange};
 #[cfg(feature = "qkd")]
 use crate::qkd::QkdClient;
 use pqcrypto_traits::sign::{PublicKey as SignPublicKeyTrait, SecretKey as SignSecretKeyTrait, SignedMessage as SignedMessageTrait};
@@ -160,64 +163,70 @@ impl<'a> ClientHandshake<'a> {
     /// Perform client handshake
     pub async fn perform(mut self) -> Result<Transport> {
         log::debug!("Starting client handshake");
-        
+
         // Generate client random
         let mut client_random = [0u8; 32];
         thread_rng().fill_bytes(&mut client_random);
         log::debug!("Generated client random");
-        
+
+        // Build list of supported KEX algorithms
+        let mut kex_algorithms = vec![self.config.kex_algorithm];
+        // Add fallbacks if not already the primary
+        if self.config.kex_algorithm != KexAlgorithm::FalconSignedShares {
+            kex_algorithms.push(KexAlgorithm::FalconSignedShares);
+        }
+        if self.config.kex_algorithm != KexAlgorithm::MlKem768 {
+            kex_algorithms.push(KexAlgorithm::MlKem768);
+        }
+
         // Send client hello
-        log::debug!("Creating ClientHelloMessage");
+        log::debug!("Creating ClientHelloMessage with KEX preference: {:?}", self.config.kex_algorithm);
         let client_hello = ClientHelloMessage {
             version: PROTOCOL_VERSION,
             random: client_random,
-            kex_algorithms: vec![PqAlgorithm::Falcon512],
+            kex_algorithms,
             sig_algorithms: vec![PqAlgorithm::SphincsPlus],
             ciphers: vec!["aes256-gcm".to_string()],
             qkd_capable: cfg!(feature = "qkd") && self.config.use_qkd,
             extensions: vec![],
         };
-        
+
         log::debug!("Sending ClientHello");
         self.send_raw(&Message::ClientHello(client_hello)).await?;
         log::debug!("ClientHello sent");
-        
+
         // Receive server hello
         log::debug!("Waiting for ServerHello");
         let server_hello = match self.receive_raw().await? {
             Message::ServerHello(msg) => {
-                log::debug!("Received ServerHello");
+                log::debug!("Received ServerHello with KEX: {:?}", msg.selected_kex);
                 msg
             },
             _ => return Err(QsshError::Protocol("Expected ServerHello".into())),
         };
-        
+
         // Validate server selection
         if server_hello.version != PROTOCOL_VERSION {
             return Err(QsshError::Protocol("Version mismatch".into()));
         }
-        
-        // Perform key exchange
-        let pq_kex = PqKeyExchange::new()?;
-        
-        // Create our key share
-        let (our_share, our_signature) = pq_kex.create_key_share()?;
-        
-        // Process server's key share
-        let server_share = pq_kex.process_key_share(
-            &server_hello.falcon_public_key,
-            &server_hello.key_share,
-            &server_hello.key_share_signature,
-        )?;
-        
-        // Compute shared secret
-        let shared_secret = pq_kex.compute_shared_secret(
-            &our_share,
-            &server_share,
-            &client_random,
-            &server_hello.random,
-        );
-        
+
+        // Perform key exchange based on selected algorithm
+        let (shared_secret, key_exchange_msg, pq_kex) = match server_hello.selected_kex {
+            KexAlgorithm::FalconSignedShares => {
+                self.perform_falcon_kex(&server_hello, &client_random).await?
+            }
+            KexAlgorithm::MlKem768 => {
+                self.perform_mlkem768_kex(&server_hello, &client_random).await?
+            }
+            KexAlgorithm::MlKem1024 => {
+                self.perform_mlkem1024_kex(&server_hello, &client_random).await?
+            }
+            #[cfg(feature = "hybrid-kex")]
+            KexAlgorithm::HybridX25519MlKem768 => {
+                self.perform_hybrid_kex(&server_hello, &client_random).await?
+            }
+        };
+
         // Get QKD key if available
         log::debug!("Checking QKD: enabled={}, endpoint={:?}", self.config.use_qkd, server_hello.qkd_endpoint);
         #[cfg(feature = "qkd")]
@@ -247,30 +256,16 @@ impl<'a> ClientHandshake<'a> {
         };
 
         #[cfg(not(feature = "qkd"))]
-        let (qkd_key, qkd_proof): (Option<Vec<u8>>, Option<Vec<u8>>) = (None, None);
-        
-        // Send key exchange
-        log::debug!("Creating KeyExchangeMessage");
-        let key_exchange = KeyExchangeMessage {
-            falcon_public_key: {
-                use SignPublicKeyTrait;
-                let pk_bytes = pq_kex.falcon_pk.as_bytes().to_vec();
-                log::debug!("Falcon public key: {} bytes", pk_bytes.len());
-                pk_bytes
-            },
-            key_share: our_share,
-            key_share_signature: our_signature,
-            sphincs_public_key: {
-                use SignPublicKeyTrait;
-                let pk_bytes = pq_kex.sphincs_pk.as_bytes().to_vec();
-                log::debug!("SPHINCS+ public key: {} bytes", pk_bytes.len());
-                pk_bytes
-            },
-            qkd_proof,
-        };
-        
+        let qkd_proof: Option<Vec<u8>> = None;
+        #[cfg(not(feature = "qkd"))]
+        let qkd_key: Option<Vec<u8>> = None;
+
+        // Add QKD proof to the key exchange message
+        let mut key_exchange_msg = key_exchange_msg;
+        key_exchange_msg.qkd_proof = qkd_proof;
+
         log::debug!("Sending KeyExchangeMessage");
-        self.send_raw(&Message::KeyExchange(key_exchange)).await?;
+        self.send_raw(&Message::KeyExchange(key_exchange_msg)).await?;
         log::debug!("KeyExchangeMessage sent");
         
         // Derive session keys - combine PQC shared secret with QKD key if available
@@ -423,6 +418,177 @@ impl<'a> ClientHandshake<'a> {
         hasher.update(server_random);
         hasher.finalize().to_vec()
     }
+
+    /// Perform Falcon-signed shares key exchange (original QSSH method)
+    async fn perform_falcon_kex(
+        &self,
+        server_hello: &ServerHelloMessage,
+        client_random: &[u8; 32],
+    ) -> Result<(Vec<u8>, KeyExchangeMessage, PqKeyExchange)> {
+        log::debug!("Performing Falcon-signed shares KEX");
+
+        let pq_kex = PqKeyExchange::new()?;
+
+        // Create our key share
+        let (our_share, our_signature) = pq_kex.create_key_share()?;
+
+        // Process server's key share
+        let server_share = pq_kex.process_key_share(
+            &server_hello.falcon_public_key,
+            &server_hello.key_share,
+            &server_hello.key_share_signature,
+        )?;
+
+        // Compute shared secret
+        let shared_secret = pq_kex.compute_shared_secret(
+            &our_share,
+            &server_share,
+            client_random,
+            &server_hello.random,
+        );
+
+        let key_exchange = KeyExchangeMessage {
+            falcon_public_key: {
+                use SignPublicKeyTrait;
+                pq_kex.falcon_pk.as_bytes().to_vec()
+            },
+            key_share: our_share,
+            key_share_signature: our_signature,
+            sphincs_public_key: {
+                use SignPublicKeyTrait;
+                pq_kex.sphincs_pk.as_bytes().to_vec()
+            },
+            mlkem_ciphertext: None,
+            x25519_public_key: None,
+            qkd_proof: None,
+        };
+
+        Ok((shared_secret, key_exchange, pq_kex))
+    }
+
+    /// Perform ML-KEM-768 key exchange
+    async fn perform_mlkem768_kex(
+        &self,
+        server_hello: &ServerHelloMessage,
+        client_random: &[u8; 32],
+    ) -> Result<(Vec<u8>, KeyExchangeMessage, PqKeyExchange)> {
+        log::debug!("Performing ML-KEM-768 KEX");
+
+        let server_ek = server_hello.mlkem_encapsulation_key.as_ref()
+            .ok_or_else(|| QsshError::Protocol("Server did not provide ML-KEM encapsulation key".into()))?;
+
+        // Encapsulate to get shared secret and ciphertext
+        let (mlkem_shared, mlkem_ciphertext) = mlkem768_encapsulate(server_ek)?;
+
+        // Derive session material
+        let shared_secret = derive_session_material(&mlkem_shared, client_random, &server_hello.random);
+
+        // Still create PqKeyExchange for authentication
+        let pq_kex = PqKeyExchange::new()?;
+
+        let key_exchange = KeyExchangeMessage {
+            falcon_public_key: {
+                use SignPublicKeyTrait;
+                pq_kex.falcon_pk.as_bytes().to_vec()
+            },
+            key_share: Vec::new(),
+            key_share_signature: Vec::new(),
+            sphincs_public_key: {
+                use SignPublicKeyTrait;
+                pq_kex.sphincs_pk.as_bytes().to_vec()
+            },
+            mlkem_ciphertext: Some(mlkem_ciphertext),
+            x25519_public_key: None,
+            qkd_proof: None,
+        };
+
+        log::info!("ML-KEM-768 key exchange completed");
+        Ok((shared_secret, key_exchange, pq_kex))
+    }
+
+    /// Perform ML-KEM-1024 key exchange
+    async fn perform_mlkem1024_kex(
+        &self,
+        server_hello: &ServerHelloMessage,
+        client_random: &[u8; 32],
+    ) -> Result<(Vec<u8>, KeyExchangeMessage, PqKeyExchange)> {
+        log::debug!("Performing ML-KEM-1024 KEX");
+
+        let server_ek = server_hello.mlkem_encapsulation_key.as_ref()
+            .ok_or_else(|| QsshError::Protocol("Server did not provide ML-KEM encapsulation key".into()))?;
+
+        // Encapsulate to get shared secret and ciphertext
+        let (mlkem_shared, mlkem_ciphertext) = mlkem1024_encapsulate(server_ek)?;
+
+        // Derive session material
+        let shared_secret = derive_session_material(&mlkem_shared, client_random, &server_hello.random);
+
+        // Still create PqKeyExchange for authentication
+        let pq_kex = PqKeyExchange::new()?;
+
+        let key_exchange = KeyExchangeMessage {
+            falcon_public_key: {
+                use SignPublicKeyTrait;
+                pq_kex.falcon_pk.as_bytes().to_vec()
+            },
+            key_share: Vec::new(),
+            key_share_signature: Vec::new(),
+            sphincs_public_key: {
+                use SignPublicKeyTrait;
+                pq_kex.sphincs_pk.as_bytes().to_vec()
+            },
+            mlkem_ciphertext: Some(mlkem_ciphertext),
+            x25519_public_key: None,
+            qkd_proof: None,
+        };
+
+        log::info!("ML-KEM-1024 key exchange completed");
+        Ok((shared_secret, key_exchange, pq_kex))
+    }
+
+    /// Perform hybrid X25519 + ML-KEM-768 key exchange
+    #[cfg(feature = "hybrid-kex")]
+    async fn perform_hybrid_kex(
+        &self,
+        server_hello: &ServerHelloMessage,
+        client_random: &[u8; 32],
+    ) -> Result<(Vec<u8>, KeyExchangeMessage, PqKeyExchange)> {
+        log::debug!("Performing hybrid X25519 + ML-KEM-768 KEX");
+
+        let server_x25519_pk = server_hello.x25519_public_key.as_ref()
+            .ok_or_else(|| QsshError::Protocol("Server did not provide X25519 public key".into()))?;
+        let server_mlkem_ek = server_hello.mlkem_encapsulation_key.as_ref()
+            .ok_or_else(|| QsshError::Protocol("Server did not provide ML-KEM encapsulation key".into()))?;
+
+        // Perform hybrid key exchange
+        let client_exchange = HybridClientExchange::new();
+        let (hybrid_shared, mlkem_ciphertext) = client_exchange.complete(server_x25519_pk, server_mlkem_ek)?;
+
+        // Derive session material
+        let shared_secret = derive_session_material(&hybrid_shared, client_random, &server_hello.random);
+
+        // Still create PqKeyExchange for authentication
+        let pq_kex = PqKeyExchange::new()?;
+
+        let key_exchange = KeyExchangeMessage {
+            falcon_public_key: {
+                use SignPublicKeyTrait;
+                pq_kex.falcon_pk.as_bytes().to_vec()
+            },
+            key_share: Vec::new(),
+            key_share_signature: Vec::new(),
+            sphincs_public_key: {
+                use SignPublicKeyTrait;
+                pq_kex.sphincs_pk.as_bytes().to_vec()
+            },
+            mlkem_ciphertext: Some(mlkem_ciphertext),
+            x25519_public_key: Some(client_exchange.x25519_public_key().to_vec()),
+            qkd_proof: None,
+        };
+
+        log::info!("Hybrid X25519 + ML-KEM-768 key exchange completed");
+        Ok((shared_secret, key_exchange, pq_kex))
+    }
 }
 
 /// Server-side handshake
@@ -466,56 +632,45 @@ impl ServerHandshake {
             Message::ClientHello(msg) => msg,
             _ => return Err(QsshError::Protocol("Expected ClientHello".into())),
         };
-        
-        // Generate server random and Falcon keys
+
+        log::debug!("Client supports KEX algorithms: {:?}", client_hello.kex_algorithms);
+
+        // Select KEX algorithm (prefer client's first choice if we support it)
+        let selected_kex = self.select_kex_algorithm(&client_hello.kex_algorithms)?;
+        log::info!("Selected KEX algorithm: {:?}", selected_kex);
+
+        // Generate server random
         let mut server_random = [0u8; 32];
         thread_rng().fill_bytes(&mut server_random);
-        
+
+        // Generate Falcon keys for authentication (used regardless of KEX)
         let server_kex = PqKeyExchange::new()?;
-        
-        // Create server's key share
-        let (server_share, server_signature) = server_kex.create_key_share()?;
-        
-        // Send server hello
-        let server_hello = ServerHelloMessage {
-            version: PROTOCOL_VERSION,
-            random: server_random,
-            selected_kex: PqAlgorithm::Falcon512,
-            selected_sig: PqAlgorithm::SphincsPlus,
-            selected_cipher: "aes256-gcm".to_string(),
-            falcon_public_key: {
-                use SignPublicKeyTrait;
-                server_kex.falcon_pk.as_bytes().to_vec()
-            },
-            key_share: server_share.clone(),
-            key_share_signature: server_signature,
-            qkd_endpoint: self.qkd_endpoint.clone(),
-            extensions: vec![],
-        };
-        
+
+        // Build server hello based on selected KEX algorithm
+        let (server_hello, kex_state) = self.build_server_hello(
+            selected_kex,
+            server_random,
+            &server_kex,
+        )?;
+
         self.send_raw(&Message::ServerHello(server_hello)).await?;
-        
+
         // Receive key exchange
         let key_exchange = match self.receive_raw().await? {
             Message::KeyExchange(msg) => msg,
             _ => return Err(QsshError::Protocol("Expected KeyExchange".into())),
         };
-        
-        // Process client's key share
-        let client_share = server_kex.process_key_share(
-            &key_exchange.falcon_public_key,
-            &key_exchange.key_share,
-            &key_exchange.key_share_signature,
-        )?;
-        
-        // Compute shared secret (note: server reverses the order)
-        let shared_secret = server_kex.compute_shared_secret(
-            &server_share,  // server's share first
-            &client_share,  // client's share second
+
+        // Process key exchange based on selected algorithm
+        let shared_secret = self.process_key_exchange(
+            selected_kex,
+            &key_exchange,
             &client_hello.random,
             &server_random,
-        );
-        
+            &server_kex,
+            kex_state,
+        )?;
+
         // Derive session keys
         let session_keys = SessionKeyDerivation::derive_keys(
             &shared_secret,
@@ -644,4 +799,194 @@ impl ServerHandshake {
         hasher.update(server_random);
         hasher.finalize().to_vec()
     }
+
+    /// Select a KEX algorithm from client's preferences
+    fn select_kex_algorithm(&self, client_prefs: &[KexAlgorithm]) -> Result<KexAlgorithm> {
+        // Server's preference order (we prefer newer ML-KEM over legacy Falcon-signed)
+        let server_prefs = [
+            #[cfg(feature = "hybrid-kex")]
+            KexAlgorithm::HybridX25519MlKem768,
+            KexAlgorithm::MlKem1024,
+            KexAlgorithm::MlKem768,
+            KexAlgorithm::FalconSignedShares,
+        ];
+
+        // Find first client preference that server also supports
+        for client_choice in client_prefs {
+            if server_prefs.contains(client_choice) {
+                return Ok(*client_choice);
+            }
+        }
+
+        // Fallback to FalconSignedShares for backward compatibility
+        Ok(KexAlgorithm::FalconSignedShares)
+    }
+
+    /// Build server hello message with KEX-specific data
+    fn build_server_hello(
+        &self,
+        selected_kex: KexAlgorithm,
+        server_random: [u8; 32],
+        server_pq_kex: &PqKeyExchange,
+    ) -> Result<(ServerHelloMessage, ServerKexState)> {
+        match selected_kex {
+            KexAlgorithm::FalconSignedShares => {
+                let (server_share, server_signature) = server_pq_kex.create_key_share()?;
+
+                let hello = ServerHelloMessage {
+                    version: PROTOCOL_VERSION,
+                    random: server_random,
+                    selected_kex: KexAlgorithm::FalconSignedShares,
+                    selected_sig: PqAlgorithm::SphincsPlus,
+                    selected_cipher: "aes256-gcm".to_string(),
+                    falcon_public_key: {
+                        use SignPublicKeyTrait;
+                        server_pq_kex.falcon_pk.as_bytes().to_vec()
+                    },
+                    key_share: server_share.clone(),
+                    key_share_signature: server_signature,
+                    mlkem_encapsulation_key: None,
+                    x25519_public_key: None,
+                    qkd_endpoint: self.qkd_endpoint.clone(),
+                    extensions: vec![],
+                };
+
+                Ok((hello, ServerKexState::FalconShares { server_share }))
+            }
+            KexAlgorithm::MlKem768 => {
+                let mlkem_keypair = MlKem768KeyPair::generate()?;
+
+                let hello = ServerHelloMessage {
+                    version: PROTOCOL_VERSION,
+                    random: server_random,
+                    selected_kex: KexAlgorithm::MlKem768,
+                    selected_sig: PqAlgorithm::SphincsPlus,
+                    selected_cipher: "aes256-gcm".to_string(),
+                    falcon_public_key: {
+                        use SignPublicKeyTrait;
+                        server_pq_kex.falcon_pk.as_bytes().to_vec()
+                    },
+                    key_share: Vec::new(),
+                    key_share_signature: Vec::new(),
+                    mlkem_encapsulation_key: Some(mlkem_keypair.encapsulation_key().to_vec()),
+                    x25519_public_key: None,
+                    qkd_endpoint: self.qkd_endpoint.clone(),
+                    extensions: vec![],
+                };
+
+                Ok((hello, ServerKexState::MlKem768 { keypair: mlkem_keypair }))
+            }
+            KexAlgorithm::MlKem1024 => {
+                let mlkem_keypair = MlKem1024KeyPair::generate()?;
+
+                let hello = ServerHelloMessage {
+                    version: PROTOCOL_VERSION,
+                    random: server_random,
+                    selected_kex: KexAlgorithm::MlKem1024,
+                    selected_sig: PqAlgorithm::SphincsPlus,
+                    selected_cipher: "aes256-gcm".to_string(),
+                    falcon_public_key: {
+                        use SignPublicKeyTrait;
+                        server_pq_kex.falcon_pk.as_bytes().to_vec()
+                    },
+                    key_share: Vec::new(),
+                    key_share_signature: Vec::new(),
+                    mlkem_encapsulation_key: Some(mlkem_keypair.encapsulation_key().to_vec()),
+                    x25519_public_key: None,
+                    qkd_endpoint: self.qkd_endpoint.clone(),
+                    extensions: vec![],
+                };
+
+                Ok((hello, ServerKexState::MlKem1024 { keypair: mlkem_keypair }))
+            }
+            #[cfg(feature = "hybrid-kex")]
+            KexAlgorithm::HybridX25519MlKem768 => {
+                let hybrid_keypair = HybridKeyPair::generate()?;
+
+                let hello = ServerHelloMessage {
+                    version: PROTOCOL_VERSION,
+                    random: server_random,
+                    selected_kex: KexAlgorithm::HybridX25519MlKem768,
+                    selected_sig: PqAlgorithm::SphincsPlus,
+                    selected_cipher: "aes256-gcm".to_string(),
+                    falcon_public_key: {
+                        use SignPublicKeyTrait;
+                        server_pq_kex.falcon_pk.as_bytes().to_vec()
+                    },
+                    key_share: Vec::new(),
+                    key_share_signature: Vec::new(),
+                    mlkem_encapsulation_key: Some(hybrid_keypair.mlkem_encapsulation_key().to_vec()),
+                    x25519_public_key: Some(hybrid_keypair.x25519_public_key().to_vec()),
+                    qkd_endpoint: self.qkd_endpoint.clone(),
+                    extensions: vec![],
+                };
+
+                Ok((hello, ServerKexState::Hybrid { keypair: hybrid_keypair }))
+            }
+        }
+    }
+
+    /// Process key exchange message and compute shared secret
+    fn process_key_exchange(
+        &self,
+        selected_kex: KexAlgorithm,
+        key_exchange: &KeyExchangeMessage,
+        client_random: &[u8; 32],
+        server_random: &[u8; 32],
+        server_pq_kex: &PqKeyExchange,
+        kex_state: ServerKexState,
+    ) -> Result<Vec<u8>> {
+        match (selected_kex, kex_state) {
+            (KexAlgorithm::FalconSignedShares, ServerKexState::FalconShares { server_share }) => {
+                // Process client's key share
+                let client_share = server_pq_kex.process_key_share(
+                    &key_exchange.falcon_public_key,
+                    &key_exchange.key_share,
+                    &key_exchange.key_share_signature,
+                )?;
+
+                // Compute shared secret
+                Ok(server_pq_kex.compute_shared_secret(
+                    &server_share,
+                    &client_share,
+                    client_random,
+                    server_random,
+                ))
+            }
+            (KexAlgorithm::MlKem768, ServerKexState::MlKem768 { keypair }) => {
+                let ciphertext = key_exchange.mlkem_ciphertext.as_ref()
+                    .ok_or_else(|| QsshError::Protocol("Client did not provide ML-KEM ciphertext".into()))?;
+
+                let mlkem_shared = keypair.decapsulate(ciphertext)?;
+                Ok(derive_session_material(&mlkem_shared, client_random, server_random))
+            }
+            (KexAlgorithm::MlKem1024, ServerKexState::MlKem1024 { keypair }) => {
+                let ciphertext = key_exchange.mlkem_ciphertext.as_ref()
+                    .ok_or_else(|| QsshError::Protocol("Client did not provide ML-KEM ciphertext".into()))?;
+
+                let mlkem_shared = keypair.decapsulate(ciphertext)?;
+                Ok(derive_session_material(&mlkem_shared, client_random, server_random))
+            }
+            #[cfg(feature = "hybrid-kex")]
+            (KexAlgorithm::HybridX25519MlKem768, ServerKexState::Hybrid { keypair }) => {
+                let client_x25519_pk = key_exchange.x25519_public_key.as_ref()
+                    .ok_or_else(|| QsshError::Protocol("Client did not provide X25519 public key".into()))?;
+                let ciphertext = key_exchange.mlkem_ciphertext.as_ref()
+                    .ok_or_else(|| QsshError::Protocol("Client did not provide ML-KEM ciphertext".into()))?;
+
+                let hybrid_shared = keypair.process_response(client_x25519_pk, ciphertext)?;
+                Ok(derive_session_material(&hybrid_shared, client_random, server_random))
+            }
+            _ => Err(QsshError::Protocol("KEX algorithm mismatch".into())),
+        }
+    }
+}
+
+/// Server-side KEX state during handshake
+enum ServerKexState {
+    FalconShares { server_share: Vec<u8> },
+    MlKem768 { keypair: MlKem768KeyPair },
+    MlKem1024 { keypair: MlKem1024KeyPair },
+    #[cfg(feature = "hybrid-kex")]
+    Hybrid { keypair: HybridKeyPair },
 }

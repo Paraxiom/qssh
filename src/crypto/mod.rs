@@ -1,4 +1,4 @@
-//! Post-quantum cryptography module using Falcon + SPHINCS+
+//! Post-quantum cryptography module using Falcon + SPHINCS+ + ML-KEM
 
 use crate::{QsshError, Result};
 use pqcrypto_sphincsplus::sphincssha256128ssimple as sphincs;
@@ -15,12 +15,19 @@ pub mod quantum_cipher;
 pub mod cipher_choice;
 pub mod qrng_integration;
 pub mod quantum_kem;  // PROPER quantum KEM (not broken signature-only!)
+pub mod mlkem;
+#[cfg(feature = "hybrid-kex")]
+pub mod hybrid;
 #[cfg(test)]
 pub mod test_helpers;
+
 pub use kdf::{SessionKeyDerivation, SessionKeys};
 pub use quantum_cipher::QuantumCipher;
 pub use cipher_choice::{CipherAlgorithm, UniversalCipher};
 pub use qrng_integration::{QuantumRng, QrngConfig};
+pub use mlkem::{MlKem768KeyPair, MlKem1024KeyPair, mlkem768_encapsulate, mlkem1024_encapsulate};
+#[cfg(feature = "hybrid-kex")]
+pub use hybrid::{HybridKeyPair, HybridClientExchange, combine_secrets};
 
 /// Post-quantum signature using SPHINCS+
 pub struct PqSignature {

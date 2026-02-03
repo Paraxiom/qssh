@@ -196,6 +196,7 @@ async fn main() {
         qkd_key_path: args.qkd_key.clone(),
         qkd_ca_path: args.qkd_ca.clone(),
         pq_algorithm,
+        kex_algorithm: qssh::KexAlgorithm::default(),
         key_rotation_interval: 3600, // 1 hour
         security_tier: SecurityTier::default(),
         quantum_native,

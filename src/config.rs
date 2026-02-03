@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::{Result, QsshError, QsshConfig, PortForward, PqAlgorithm, security_tiers::SecurityTier};
+use crate::{Result, QsshError, QsshConfig, PortForward, PqAlgorithm, KexAlgorithm, security_tiers::SecurityTier};
 
 /// Host configuration from config file
 #[derive(Debug, Clone)]
@@ -17,6 +17,8 @@ pub struct HostConfig {
     pub remote_forward: Vec<String>,
     pub dynamic_forward: Vec<String>,
     pub pq_algorithm: Option<PqAlgorithm>,
+    /// Key exchange algorithm (default: FalconSignedShares for backward compatibility)
+    pub kex_algorithm: Option<KexAlgorithm>,
     pub use_qkd: bool,
     pub qkd_endpoint: Option<String>,
     pub qkd_cert_path: Option<String>,
@@ -39,6 +41,7 @@ impl Default for HostConfig {
             remote_forward: Vec::new(),
             dynamic_forward: Vec::new(),
             pq_algorithm: None,
+            kex_algorithm: None,
             use_qkd: false,
             qkd_endpoint: None,
             qkd_cert_path: None,
@@ -166,6 +169,41 @@ impl ConfigParser {
                         _ => None,
                     };
                 }
+                "kexalgorithm" => {
+                    current_config.kex_algorithm = match value.to_lowercase().as_str() {
+                        "falcon-signed" | "falcon-signed-shares" | "falconsignedshares" => {
+                            Some(KexAlgorithm::FalconSignedShares)
+                        }
+                        "mlkem768" | "ml-kem-768" | "mlkem-768" => {
+                            Some(KexAlgorithm::MlKem768)
+                        }
+                        "mlkem1024" | "ml-kem-1024" | "mlkem-1024" => {
+                            Some(KexAlgorithm::MlKem1024)
+                        }
+                        #[cfg(feature = "hybrid-kex")]
+                        "hybrid" | "hybrid-x25519-mlkem768" | "x25519-mlkem768" => {
+                            Some(KexAlgorithm::HybridX25519MlKem768)
+                        }
+                        #[cfg(not(feature = "hybrid-kex"))]
+                        "hybrid" | "hybrid-x25519-mlkem768" | "x25519-mlkem768" => {
+                            log::warn!("Hybrid KEX requested but 'hybrid-kex' feature not enabled. Using MlKem768 instead.");
+                            Some(KexAlgorithm::MlKem768)
+                        }
+                        // Deprecated Kyber aliases - map to ML-KEM with warning
+                        "kyber512" | "kyber768" => {
+                            log::warn!("Kyber KEX '{}' is deprecated and vulnerable. Using ML-KEM-768 instead.", value);
+                            Some(KexAlgorithm::MlKem768)
+                        }
+                        "kyber1024" => {
+                            log::warn!("Kyber KEX '{}' is deprecated and vulnerable. Using ML-KEM-1024 instead.", value);
+                            Some(KexAlgorithm::MlKem1024)
+                        }
+                        _ => {
+                            log::warn!("Unknown KEX algorithm '{}'. Using default.", value);
+                            None
+                        }
+                    };
+                }
                 "useqkd" => {
                     current_config.use_qkd = value.to_lowercase() == "yes" || value == "1";
                 }
@@ -224,8 +262,8 @@ impl ConfigParser {
             }
         }
 
-        // Return defaults
-        self.default_config.clone()
+        // Return defaults (also apply merge_with_defaults to ensure all defaults are set)
+        self.merge_with_defaults(self.default_config.clone())
     }
 
     /// Merge host config with defaults
@@ -241,6 +279,9 @@ impl ConfigParser {
         }
         if config.pq_algorithm.is_none() {
             config.pq_algorithm = self.default_config.pq_algorithm.or(Some(PqAlgorithm::Falcon512));
+        }
+        if config.kex_algorithm.is_none() {
+            config.kex_algorithm = self.default_config.kex_algorithm.or(Some(KexAlgorithm::FalconSignedShares));
         }
         if config.key_rotation_interval.is_none() {
             config.key_rotation_interval = self.default_config.key_rotation_interval.or(Some(3600));
@@ -302,6 +343,7 @@ impl ConfigParser {
             qkd_key_path: host_config.qkd_key_path,
             qkd_ca_path: host_config.qkd_ca_path,
             pq_algorithm: host_config.pq_algorithm.unwrap_or(PqAlgorithm::Falcon512),
+            kex_algorithm: host_config.kex_algorithm.unwrap_or(KexAlgorithm::FalconSignedShares),
             key_rotation_interval: host_config.key_rotation_interval.unwrap_or(3600),
             security_tier: SecurityTier::default(),
             quantum_native: true,  // Default to quantum-native transport
@@ -412,5 +454,54 @@ Host quantum-server
         assert_eq!(quantum.pq_algorithm, Some(PqAlgorithm::Falcon512));
         assert!(quantum.use_qkd);
         assert_eq!(quantum.local_forward.len(), 1);
+    }
+
+    #[test]
+    fn test_kex_algorithm_parsing() {
+        let config = r#"
+Host fips-server
+    Hostname fips.example.com
+    KexAlgorithm mlkem768
+
+Host high-security
+    Hostname secure.example.com
+    KexAlgorithm mlkem1024
+
+Host legacy-server
+    Hostname legacy.example.com
+    KexAlgorithm falcon-signed
+        "#;
+
+        let parser = ConfigParser::parse(config).unwrap();
+
+        // Test ML-KEM-768
+        let fips = parser.get_host_config("fips-server");
+        assert_eq!(fips.kex_algorithm, Some(KexAlgorithm::MlKem768));
+
+        // Test ML-KEM-1024
+        let secure = parser.get_host_config("high-security");
+        assert_eq!(secure.kex_algorithm, Some(KexAlgorithm::MlKem1024));
+
+        // Test Falcon-signed (legacy)
+        let legacy = parser.get_host_config("legacy-server");
+        assert_eq!(legacy.kex_algorithm, Some(KexAlgorithm::FalconSignedShares));
+
+        // Test default (should be FalconSignedShares for backward compat)
+        let unknown = parser.get_host_config("unknown-server");
+        assert_eq!(unknown.kex_algorithm, Some(KexAlgorithm::FalconSignedShares));
+    }
+
+    #[test]
+    fn test_deprecated_kyber_mapping() {
+        let config = r#"
+Host kyber-server
+    KexAlgorithm kyber768
+        "#;
+
+        let parser = ConfigParser::parse(config).unwrap();
+
+        // Kyber768 should be mapped to ML-KEM-768 with warning
+        let kyber = parser.get_host_config("kyber-server");
+        assert_eq!(kyber.kex_algorithm, Some(KexAlgorithm::MlKem768));
     }
 }

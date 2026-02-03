@@ -84,21 +84,25 @@ pub struct QsshConfig {
 
     /// Enable QKD for quantum key distribution
     pub use_qkd: bool,
-    
+
     /// QKD endpoint URL (e.g., "https://192.168.0.4/api/v1/keys")
     pub qkd_endpoint: Option<String>,
-    
+
     /// Path to QKD client certificate
     pub qkd_cert_path: Option<String>,
-    
+
     /// Path to QKD client private key
     pub qkd_key_path: Option<String>,
-    
+
     /// Path to QKD CA certificate
     pub qkd_ca_path: Option<String>,
 
-    /// Post-quantum algorithm to use
+    /// Post-quantum signature algorithm to use
     pub pq_algorithm: PqAlgorithm,
+
+    /// Key exchange algorithm (default: FalconSignedShares for backward compatibility)
+    #[serde(default)]
+    pub kex_algorithm: KexAlgorithm,
 
     /// Key rotation interval (seconds)
     pub key_rotation_interval: u64,
@@ -123,6 +127,7 @@ impl Default for QsshConfig {
             qkd_key_path: None,
             qkd_ca_path: None,
             pq_algorithm: PqAlgorithm::Falcon512,
+            kex_algorithm: KexAlgorithm::FalconSignedShares,
             key_rotation_interval: 3600,
             security_tier: SecurityTier::default(),  // T2: Hardened PQ
             quantum_native: true,  // Default to quantum-native transport
@@ -137,7 +142,7 @@ pub struct PortForward {
     pub remote_port: u16,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum PqAlgorithm {
     /// SPHINCS+ - Hash-based signature (NIST Level 1)
     SphincsPlus,
@@ -145,8 +150,33 @@ pub enum PqAlgorithm {
     Falcon512,
     /// Falcon-1024 - NTRU lattice-based signature (NIST Level 5)
     Falcon1024,
-    // Note: Kyber algorithms removed due to KyberSlash and timing vulnerabilities
-    // Use SPHINCS+ and Falcon for quantum-resistant cryptography instead
+}
+
+/// Key exchange algorithm for QSSH handshake
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+pub enum KexAlgorithm {
+    /// Falcon-signed ephemeral shares (original QSSH, backward compatible)
+    #[default]
+    FalconSignedShares,
+    /// ML-KEM-768 (FIPS 203, NIST Level 3)
+    MlKem768,
+    /// ML-KEM-1024 (FIPS 203, NIST Level 5)
+    MlKem1024,
+    /// X25519 + ML-KEM-768 hybrid (requires hybrid-kex feature)
+    #[cfg(feature = "hybrid-kex")]
+    HybridX25519MlKem768,
+}
+
+impl std::fmt::Display for KexAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KexAlgorithm::FalconSignedShares => write!(f, "falcon-signed-shares"),
+            KexAlgorithm::MlKem768 => write!(f, "mlkem768 (FIPS 203, Level 3)"),
+            KexAlgorithm::MlKem1024 => write!(f, "mlkem1024 (FIPS 203, Level 5)"),
+            #[cfg(feature = "hybrid-kex")]
+            KexAlgorithm::HybridX25519MlKem768 => write!(f, "hybrid-x25519-mlkem768"),
+        }
+    }
 }
 
 impl std::fmt::Display for PqAlgorithm {

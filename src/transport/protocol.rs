@@ -1,7 +1,7 @@
 //! QSSH protocol messages
 
 use serde::{Serialize, Deserialize};
-use crate::PqAlgorithm;
+use crate::{PqAlgorithm, KexAlgorithm};
 
 /// QSSH protocol version
 pub const PROTOCOL_VERSION: (u8, u8) = (0, 1);
@@ -49,7 +49,8 @@ pub struct VersionMessage {
 pub struct ClientHelloMessage {
     pub version: (u8, u8),
     pub random: [u8; 32],
-    pub kex_algorithms: Vec<PqAlgorithm>,
+    /// Supported key exchange algorithms (ordered by preference)
+    pub kex_algorithms: Vec<KexAlgorithm>,
     pub sig_algorithms: Vec<PqAlgorithm>,
     pub ciphers: Vec<String>,
     pub qkd_capable: bool,
@@ -60,22 +61,41 @@ pub struct ClientHelloMessage {
 pub struct ServerHelloMessage {
     pub version: (u8, u8),
     pub random: [u8; 32],
-    pub selected_kex: PqAlgorithm,
+    /// Selected key exchange algorithm
+    pub selected_kex: KexAlgorithm,
     pub selected_sig: PqAlgorithm,
     pub selected_cipher: String,
+    /// Falcon public key (used for FalconSignedShares KEX)
     pub falcon_public_key: Vec<u8>,
+    /// Key share for FalconSignedShares KEX
     pub key_share: Vec<u8>,
+    /// Signature over key_share (for FalconSignedShares)
     pub key_share_signature: Vec<u8>,
+    /// ML-KEM encapsulation key (used for MlKem768/MlKem1024 KEX)
+    #[serde(default)]
+    pub mlkem_encapsulation_key: Option<Vec<u8>>,
+    /// X25519 public key (used for Hybrid KEX)
+    #[serde(default)]
+    pub x25519_public_key: Option<Vec<u8>>,
     pub qkd_endpoint: Option<String>,
     pub extensions: Vec<Extension>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyExchangeMessage {
+    /// Falcon public key (for FalconSignedShares KEX)
     pub falcon_public_key: Vec<u8>,
+    /// Key share for FalconSignedShares KEX
     pub key_share: Vec<u8>,
+    /// Signature over key_share (for FalconSignedShares)
     pub key_share_signature: Vec<u8>,
     pub sphincs_public_key: Vec<u8>,
+    /// ML-KEM ciphertext (used for MlKem768/MlKem1024 KEX)
+    #[serde(default)]
+    pub mlkem_ciphertext: Option<Vec<u8>>,
+    /// X25519 public key from client (used for Hybrid KEX)
+    #[serde(default)]
+    pub x25519_public_key: Option<Vec<u8>>,
     pub qkd_proof: Option<Vec<u8>>,
 }
 
