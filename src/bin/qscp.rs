@@ -8,7 +8,7 @@ use tokio::fs;
 #[derive(Parser, Debug)]
 #[clap(name = "qscp")]
 #[clap(about = "Quantum-Secure Copy - Transfer files with post-quantum security")]
-#[clap(version = "0.1.0")]
+#[clap(version = env!("CARGO_PKG_VERSION"))]
 struct Args {
     /// Source file(s)
     source: Vec<String>,

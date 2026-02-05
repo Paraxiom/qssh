@@ -28,7 +28,7 @@ struct QkdFileConfig {
 #[derive(Parser, Debug)]
 #[clap(name = "qsshd")]
 #[clap(about = "Quantum-Secure Shell Daemon - Accept quantum-secure remote connections")]
-#[clap(version = "0.1.0")]
+#[clap(version = env!("CARGO_PKG_VERSION"))]
 struct Args {
     /// Address to listen on
     #[clap(short, long, default_value = "0.0.0.0:4242")]

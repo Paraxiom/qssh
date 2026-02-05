@@ -10,7 +10,7 @@ use std::process;
 #[derive(Parser, Debug)]
 #[clap(name = "qssh")]
 #[clap(about = "Quantum-Secure Shell - Connect to remote systems with post-quantum security")]
-#[clap(version = "0.1.0")]
+#[clap(version = env!("CARGO_PKG_VERSION"))]
 struct Args {
     /// User@host to connect to
     destination: String,
