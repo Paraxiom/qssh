@@ -55,16 +55,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Warn about non-quantum algorithms
     match args.key_type {
-        KeyType::Rsa | KeyType::Ed25519 => {
-            eprintln!("Warning: {} is not quantum-safe. Use falcon512 or sphincs+ instead.", 
-                match args.key_type {
-                    KeyType::Rsa => "RSA",
-                    KeyType::Ed25519 => "Ed25519",
-                    _ => unreachable!()
-                });
+        KeyType::Rsa => {
+            eprintln!("Warning: RSA is not quantum-safe. Use falcon512 or sphincs+ instead.");
             std::process::exit(1);
         }
-        _ => {}
+        KeyType::Ed25519 => {
+            eprintln!("Warning: Ed25519 is not quantum-safe. Use falcon512 or sphincs+ instead.");
+            std::process::exit(1);
+        }
+        KeyType::Falcon512 | KeyType::SphincsPlus => {}
     }
 
     // Expand tilde in output path
@@ -94,7 +93,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Generating {} key pair...", match args.key_type {
         KeyType::Falcon512 => "Falcon-512 post-quantum",
         KeyType::SphincsPlus => "SPHINCS+ post-quantum",
-        _ => unreachable!()
+        KeyType::Rsa | KeyType::Ed25519 => {
+            eprintln!("Error: classical key types are not supported for generation.");
+            std::process::exit(1);
+        }
     });
 
     let (private_key, public_key, algorithm) = match args.key_type {
@@ -110,7 +112,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let public_bytes = sig.public_bytes();
             (private_bytes, public_bytes, PqAlgorithm::SphincsPlus)
         },
-        _ => unreachable!()
+        KeyType::Rsa | KeyType::Ed25519 => {
+            eprintln!("Error: classical key types are not supported for generation.");
+            std::process::exit(1);
+        }
     };
 
     // Format the private key (similar to OpenSSH format but quantum-safe)

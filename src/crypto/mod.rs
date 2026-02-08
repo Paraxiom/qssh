@@ -293,9 +293,11 @@ impl SymmetricCrypto {
 mod tests {
     use super::*;
     
-    // TODO: Fix segfault in Falcon tests on macOS
-    // #[test]
-    #[allow(dead_code)]
+    /// Falcon key agreement test — disabled on macOS due to pqcrypto-falcon
+    /// segfault in the Falcon-512 FFT sampling code. Works correctly on Linux.
+    /// See: https://github.com/pqclean/pqclean/issues — macOS ARM64 stack alignment issue.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
     fn test_falcon_key_agreement() {
         let alice = PqKeyExchange::new().unwrap();
         let bob = PqKeyExchange::new().unwrap();
@@ -343,8 +345,9 @@ mod tests {
         assert_eq!(alice_secret, bob_secret);
     }
     
-    // #[test]
-    #[allow(dead_code)]
+    /// Falcon signature test — disabled on macOS due to pqcrypto-falcon segfault.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
     fn test_falcon_signatures() {
         let signer = PqKeyExchange::new().unwrap();
         let message = b"Test message for Falcon";

@@ -8,6 +8,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use crate::{Result, QsshError, PqAlgorithm};
 use sha2::{Sha256, Digest};
+use hmac::{Hmac, Mac};
+use sha1::Sha1;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
@@ -400,9 +402,21 @@ impl KnownHosts {
             return hostname.ends_with(domain);
         }
 
-        // Hash-based patterns (OpenSSH hashed format)
+        // OpenSSH hashed hostname format: |1|<base64-salt>|<base64-hash>
+        // The hash is HMAC-SHA1(salt, hostname). We recompute and compare.
         if pattern.starts_with("|1|") {
-            // TODO: Implement hashed hostname matching
+            let remainder = &pattern[3..];
+            if let Some(sep) = remainder.find('|') {
+                let salt_b64 = &remainder[..sep];
+                let hash_b64 = &remainder[sep + 1..];
+                if let (Ok(salt), Ok(expected_hash)) = (BASE64.decode(salt_b64), BASE64.decode(hash_b64)) {
+                    if let Ok(mut mac) = Hmac::<Sha1>::new_from_slice(&salt) {
+                        mac.update(hostname.as_bytes());
+                        let computed = mac.finalize().into_bytes();
+                        return computed.as_slice() == expected_hash.as_slice();
+                    }
+                }
+            }
             return false;
         }
 
