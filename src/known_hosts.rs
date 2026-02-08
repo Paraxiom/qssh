@@ -523,4 +523,48 @@ mod tests {
         assert!(known_hosts.matches_pattern("anything", "*"));
         assert!(!known_hosts.matches_pattern("example.org", "*.example.com"));
     }
+
+    #[test]
+    fn test_hashed_hostname_matching() {
+        let temp_dir = TempDir::new().unwrap();
+        let known_hosts_path = temp_dir.path().join("known_hosts");
+        let known_hosts = KnownHosts::new(known_hosts_path, true).unwrap();
+
+        // Generate a known hashed hostname entry the same way OpenSSH does:
+        // HMAC-SHA1(salt, hostname) then encode both as base64 in |1|<salt>|<hash>
+        use hmac::{Hmac, Mac};
+        use sha1::Sha1;
+
+        let hostname = "github.com";
+        let salt = b"test-salt-value!"; // 16 bytes
+
+        let mut mac = Hmac::<Sha1>::new_from_slice(salt).unwrap();
+        mac.update(hostname.as_bytes());
+        let hash = mac.finalize().into_bytes();
+
+        let salt_b64 = BASE64.encode(salt);
+        let hash_b64 = BASE64.encode(&hash);
+        let pattern = format!("|1|{}|{}", salt_b64, hash_b64);
+
+        // Correct hostname should match
+        assert!(known_hosts.matches_pattern("github.com", &pattern));
+        // Wrong hostname should not match
+        assert!(!known_hosts.matches_pattern("gitlab.com", &pattern));
+        // Partial hostname should not match
+        assert!(!known_hosts.matches_pattern("github.com.evil.org", &pattern));
+    }
+
+    #[test]
+    fn test_hashed_hostname_malformed_patterns() {
+        let temp_dir = TempDir::new().unwrap();
+        let known_hosts_path = temp_dir.path().join("known_hosts");
+        let known_hosts = KnownHosts::new(known_hosts_path, true).unwrap();
+
+        // Missing second separator
+        assert!(!known_hosts.matches_pattern("host", "|1|onlyonepart"));
+        // Invalid base64
+        assert!(!known_hosts.matches_pattern("host", "|1|!!!invalid|!!!invalid"));
+        // Empty salt and hash
+        assert!(!known_hosts.matches_pattern("host", "|1||"));
+    }
 }

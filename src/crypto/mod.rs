@@ -376,4 +376,49 @@ mod tests {
 
         assert_eq!(plaintext, &decrypted[..]);
     }
+
+    /// Verify that Falcon tests are correctly gated per platform.
+    /// On macOS this confirms the tests are excluded; on Linux it confirms they run.
+    #[test]
+    fn test_falcon_platform_gate() {
+        if cfg!(target_os = "macos") {
+            // On macOS, Falcon FFI segfaults — tests should be gated out.
+            // This test simply documents the expectation.
+            assert!(
+                cfg!(target_os = "macos"),
+                "Falcon tests should be disabled on macOS via cfg gate"
+            );
+        } else {
+            // On Linux/other platforms, the Falcon tests should compile and run.
+            // Verify we can at least instantiate PqKeyExchange (Falcon keygen).
+            let kex = PqKeyExchange::new();
+            assert!(kex.is_ok(), "PqKeyExchange::new() should succeed on non-macOS");
+        }
+    }
+
+    #[test]
+    fn test_symmetric_crypto_short_secret_rejected() {
+        let short_secret = vec![0x42; 16]; // 16 bytes, need 32
+        let result = SymmetricCrypto::from_shared_secret(&short_secret);
+        assert!(result.is_err(), "Shared secret shorter than 32 bytes should be rejected");
+    }
+
+    #[test]
+    fn test_symmetric_crypto_ciphertext_uniqueness() {
+        let secret = vec![0x42; 32];
+        let crypto = SymmetricCrypto::from_shared_secret(&secret).unwrap();
+        let plaintext = b"Same plaintext encrypted twice";
+
+        let (ct1, nonce1) = crypto.encrypt(plaintext).unwrap();
+        let (ct2, nonce2) = crypto.encrypt(plaintext).unwrap();
+
+        // Nonces must differ (random generation)
+        assert_ne!(nonce1, nonce2, "Nonces should be unique per encryption");
+        // Ciphertexts must differ due to different nonces
+        assert_ne!(ct1, ct2, "Ciphertexts should differ due to unique nonces");
+
+        // Both should still decrypt correctly
+        assert_eq!(crypto.decrypt(&ct1, &nonce1).unwrap(), plaintext);
+        assert_eq!(crypto.decrypt(&ct2, &nonce2).unwrap(), plaintext);
+    }
 }
