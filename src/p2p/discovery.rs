@@ -49,7 +49,9 @@ impl Discovery {
     
     /// Local network broadcast discovery
     async fn local_broadcast_discovery(&self) -> Result<()> {
-        let socket = Arc::new(UdpSocket::bind("0.0.0.0:22223").await?);
+        let bind_addr = std::env::var("QSSH_DISCOVERY_BIND")
+            .unwrap_or_else(|_| "127.0.0.1:22223".to_string());
+        let socket = Arc::new(UdpSocket::bind(&bind_addr).await?);
         socket.set_broadcast(true)?;
         
         // Announce ourselves periodically

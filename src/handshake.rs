@@ -46,7 +46,7 @@ impl<'a> ClientHandshake<'a> {
             };
             
             let endpoint = config.qkd_endpoint.clone()
-                .unwrap_or_else(|| "https://192.168.0.4/api/v1/keys".to_string());
+                .ok_or_else(|| QsshError::Qkd("QKD endpoint not configured".into()))?;
             
             match QkdClient::new(endpoint, Some(qkd_config)) {
                 Ok(client) => {

@@ -90,23 +90,20 @@ impl EtsiQkdClient {
             }
         }
 
-        // For development/testing with self-signed certificates
-        // Remove these in production!
-        client_builder = client_builder
-            .danger_accept_invalid_certs(true)
-            .danger_accept_invalid_hostnames(true);
+        // Only accept invalid certs if explicitly opted in (for lab/testing with self-signed certs)
+        if std::env::var("QSSH_ALLOW_INSECURE_TLS").as_deref() == Ok("1") {
+            log::warn!("TLS certificate validation DISABLED via QSSH_ALLOW_INSECURE_TLS");
+            client_builder = client_builder
+                .danger_accept_invalid_certs(true)
+                .danger_accept_invalid_hostnames(true);
+        }
 
         let client = client_builder.build()
             .map_err(|e| QsshError::Qkd(format!("Failed to build HTTP client: {}", e)))?;
 
-        // Determine device type from endpoint
-        let device_type = if endpoint.contains("192.168.0.4") || endpoint.contains("192.168.0.2") {
-            "toshiba"
-        } else if endpoint.contains("192.168.101") {
-            "idq"
-        } else {
-            "unknown"
-        }.to_string();
+        // Determine device type from environment or default to unknown
+        let device_type = std::env::var("QSSH_QKD_DEVICE_TYPE")
+            .unwrap_or_else(|_| "unknown".to_string());
 
         Ok(Self {
             client,
@@ -144,7 +141,8 @@ impl EtsiQkdClient {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
-            return Err(QsshError::Qkd(format!("QKD API error {}: {}", status, error_text)));
+            log::error!("QKD API error {}: {}", status, error_text);
+            return Err(QsshError::Qkd(format!("QKD API request failed (status {})", status)));
         }
 
         let key_response: EtsiKeyResponse = response.json().await
@@ -204,12 +202,11 @@ pub fn create_etsi_client(config: &super::QkdConfig) -> Result<EtsiQkdClient> {
     
     let ca_path = config.ca_path.as_ref().map(|s| Path::new(s));
     
-    // Determine endpoint from configuration
-    // This should be configured properly in production
-    let endpoint = "https://192.168.0.4/api/v1/keys";  // Toshiba Alice
-    
+    let endpoint = std::env::var("QSSH_QKD_ENDPOINT")
+        .map_err(|_| QsshError::Qkd("QKD endpoint not configured. Set QSSH_QKD_ENDPOINT env var".into()))?;
+
     EtsiQkdClient::new(
-        endpoint,
+        &endpoint,
         Path::new(cert_path),
         Path::new(key_path),
         ca_path,

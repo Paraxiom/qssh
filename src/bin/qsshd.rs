@@ -31,7 +31,7 @@ struct QkdFileConfig {
 #[clap(version = env!("CARGO_PKG_VERSION"))]
 struct Args {
     /// Address to listen on
-    #[clap(short, long, default_value = "0.0.0.0:4242")]
+    #[clap(short, long, default_value = "127.0.0.1:4242")]
     listen: String,
     
     /// Generate host keys and exit
@@ -165,9 +165,8 @@ async fn main() {
                 }
             }
         } else {
-            log::warn!("QKD enabled but no config file specified. Using default endpoint.");
-            // Default QKD endpoint for Toshiba device
-            config.qkd_endpoint = Some("https://192.168.0.4/api/v1".to_string());
+            log::error!("QKD enabled but no config file specified (--qkd-config). Cannot start.");
+            process::exit(1);
         }
     }
     
