@@ -34,4 +34,4 @@ temp_*
 # Build artifacts
 *.so
 *.dylib
-*.dll
+*.dlllean/.lake/
