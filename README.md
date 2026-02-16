@@ -258,6 +258,8 @@ let ratchet = PqTripleRatchet::init_initiator_with_config(
 cd lean && lake build  # 0 errors, 0 sorries
 ```
 
+**Paper**: [162 Lean 4 Theorems for Post-Quantum Infrastructure](https://doi.org/10.5281/zenodo.18663125) (Zenodo, Feb 2026)
+
 ## Roadmap
 
 - [ ] Formal security audit
