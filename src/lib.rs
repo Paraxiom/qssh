@@ -4,6 +4,7 @@
 //! and optional QKD (Quantum Key Distribution) integration.
 
 #![recursion_limit = "4096"]
+#![cfg_attr(not(kani), allow(unexpected_cfgs))]
 
 pub mod crypto;
 pub mod transport;
