@@ -5,3 +5,5 @@ import QSSHProofs.MLKem
 import QSSHProofs.Transport
 import QSSHProofs.KDF
 import QSSHProofs.Handshake
+import QSSHProofs.Falcon
+import QSSHProofs.Sphincs

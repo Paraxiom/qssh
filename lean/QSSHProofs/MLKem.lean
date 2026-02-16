@@ -15,6 +15,8 @@
 -/
 
 import Mathlib.Data.Nat.Prime.Basic
+import Mathlib.Data.ZMod.Basic
+import Mathlib.Algebra.Field.ZMod
 import Mathlib.Tactic.NormNum
 import Mathlib.Tactic.NormNum.Prime
 
@@ -114,5 +116,28 @@ theorem grover_resistance :
 theorem ss_fits_sha256_block :
     MLKem768.SS_SIZE ≤ 64 ∧ MLKem1024.SS_SIZE ≤ 64 := by
   norm_num [MLKem768.SS_SIZE, MLKem1024.SS_SIZE]
+
+/-! ## Z_3329 field properties
+
+    We use the literal 3329 for ZMod theorems to avoid typeclass unfolding issues
+    with the opaque `def q`. -/
+
+/-- 3329 is prime (Fact instance for Mathlib typeclass synthesis). -/
+instance : Fact (Nat.Prime 3329) := ⟨by norm_num⟩
+
+/-- ZMod 3329 is a field, since 3329 is prime.
+    Verified via Mathlib's ZMod.instField. -/
+noncomputable example : Field (ZMod 3329) := inferInstance
+
+/-- The cardinality of ZMod 3329 is 3329. -/
+theorem zmod_3329_card : Fintype.card (ZMod 3329) = 3329 := ZMod.card 3329
+
+/-- The characteristic of ZMod 3329 is 3329. -/
+theorem zmod_3329_char : CharP (ZMod 3329) 3329 := ZMod.charP 3329
+
+/-- The multiplicative group (ZMod q)ˣ has order q - 1 = 3328,
+    which is divisible by 256 (the NTT dimension). -/
+theorem ntt_root_order : n ∣ (q - 1) := by
+  norm_num [q, n]
 
 end QSSHProofs.MLKem
