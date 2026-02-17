@@ -248,11 +248,11 @@ let ratchet = PqTripleRatchet::init_initiator_with_config(
 
 **Lean 4 proof files** (`lean/QSSHProofs/`):
 - `MLKem.lean` — q=3329 is prime, NTT compatibility (q % 256 = 1), Z_3329 field instance, ML-KEM-768/1024 parameter bounds
-- `FrameAlgebra.lean` — 768-byte uniform frame properties, padding bounds, information-theoretic frame security
+- `Transport.lean` — 768-byte uniform frame properties, padding bounds, information-theoretic frame security
 - `KDF.lean` — HKDF-SHA256 entropy preservation, key independence, KDF chain composition
 - `Falcon.lean` — q=12289 is prime, NTT compatibility (q % 512 = 1), signature size bounds, Falcon vs SPHINCS+ ratios
 - `Sphincs.lean` — SPHINCS+-SHAKE-256s parameters, 128-bit PQ security (Grover), statelessness, frame fitting
-- `Hybrid.lean` — Hybrid KEM composition, forward secrecy chain length
+- `Handshake.lean` — Hybrid KEM composition, forward secrecy chain length
 
 ```bash
 cd lean && lake build  # 0 errors, 0 sorries
