@@ -5,7 +5,7 @@ services:
     build: .
     container_name: qsshd-server
     ports:
-      - "127.0.0.1:22222:22222"
+      - "0.0.0.0:22222:22222"
     volumes:
       - qssh_keys:/home/qssh/.qssh
       - qssh_logs:/var/log/qssh
