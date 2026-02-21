@@ -24,7 +24,7 @@ RUN mkdir -p src/bin examples && \
       echo "fn main() {}" > src/bin/${bin}.rs; \
     done && \
     echo "fn main() {}" > examples/quantum_harmony_validator.rs && \
-    cargo build --release --bin qssh --bin qsshd --bin qscp && \
+    cargo build --release --bin qssh --bin qsshd --bin qscp --bin qssh-keygen && \
     rm -rf src examples
 
 # Copy source code
@@ -33,7 +33,7 @@ COPY examples/ examples/
 COPY docs/ docs/
 
 # Build the actual binaries
-RUN cargo build --release --bin qssh --bin qsshd --bin qscp
+RUN cargo build --release --bin qssh --bin qsshd --bin qscp --bin qssh-keygen
 
 # Runtime image
 FROM debian:bookworm-slim
@@ -45,20 +45,19 @@ RUN apt-get update && apt-get install -y \
     libgmp10 \
     && rm -rf /var/lib/apt/lists/*
 
-# Create qssh user
-RUN useradd -r -s /bin/false qssh
-
 # Copy binaries
 COPY --from=builder /app/target/release/qssh /usr/local/bin/
 COPY --from=builder /app/target/release/qsshd /usr/local/bin/
 COPY --from=builder /app/target/release/qscp /usr/local/bin/
+COPY --from=builder /app/target/release/qssh-keygen /usr/local/bin/
 
 # Create directories
-RUN mkdir -p /etc/qssh /var/log/qssh /home/qssh/.qssh && \
-    chown -R qssh:qssh /home/qssh /var/log/qssh
+RUN mkdir -p /etc/qssh /var/log/qssh /home
 
-# Copy configuration
+# Copy configuration and entrypoint
 COPY qsshd.config.production /etc/qssh/qsshd.conf
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Expose port
 EXPOSE 22222
@@ -67,8 +66,6 @@ EXPOSE 22222
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD qssh -c "echo 'health check'" localhost || exit 1
 
-# Default user
-USER qssh
-
-# Default command
-CMD ["/usr/local/bin/qsshd", "--listen", "0.0.0.0:22222", "--quantum-native"]
+# Entrypoint provisions users and generates keys, then starts qsshd
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["--listen", "0.0.0.0:22222", "--quantum-native"]
