@@ -513,16 +513,34 @@ async fn handle_channel_message(
                 });
             }
         }
+        ChannelMessage::Accept { channel_id, .. } => {
+            // Route Accept to forwarded channel handlers (for -R)
+            if channel_router.has_channel(channel_id).await {
+                log::debug!("Routing Accept for forwarded channel {} via router", channel_id);
+                channel_router.route_data(channel_id, Vec::new()).await;
+            }
+        }
         ChannelMessage::Data { channel_id, data } => {
-            // For shell sessions, data should be forwarded to the PTY
-            // The shell_handler_thread will handle this via the transport
-            log::debug!("User {} sent {} bytes on channel {}", username, data.len(), channel_id);
-            // Note: The shell handler thread is already listening for these messages
-            // so we don't need to do anything special here
+            // Route to forwarded channel handler if registered
+            if channel_router.has_channel(channel_id).await {
+                channel_router.route_data(channel_id, data).await;
+            } else {
+                log::debug!("User {} sent {} bytes on channel {}", username, data.len(), channel_id);
+            }
+        }
+        ChannelMessage::Eof { channel_id } => {
+            if channel_router.has_channel(channel_id).await {
+                channel_router.remove(channel_id).await;
+            }
         }
         ChannelMessage::Close { channel_id } => {
             log::info!("User {} closing channel {}", username, channel_id);
-            
+
+            // Route to forwarded channel handler if registered
+            if channel_router.has_channel(channel_id).await {
+                channel_router.remove(channel_id).await;
+            }
+
             // Remove channel
             let mut conns = connections.lock().await;
             if let Some(conn) = conns.get_mut(username) {

@@ -230,6 +230,8 @@ async fn main() {
         }
     }
 
+    let has_remote_forwards = !remote_forwards.is_empty();
+
     // Create client and connect
     let mut client = QsshClient::new(config);
 
@@ -278,11 +280,20 @@ async fn main() {
             if let Some(command) = args.command {
                 match client.exec(&command).await {
                     Ok(output) => {
-                        println!("{}", output);
+                        print!("{}", output);
                     }
                     Err(e) => {
                         eprintln!("Command execution failed: {}", e);
                         process::exit(1);
+                    }
+                }
+
+                // If remote forwards are active, keep connection alive for -R
+                if has_remote_forwards {
+                    info!("Exec completed, keeping connection alive for remote forwards");
+                    info!("Press Ctrl+C to disconnect");
+                    if let Err(e) = client.run_forward_loop().await {
+                        log::debug!("Forward loop ended: {}", e);
                     }
                 }
             } else {

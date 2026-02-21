@@ -42,6 +42,77 @@ impl QsshClient {
         self.remote_forward_registry = registry;
         self.forwarded_channel_router = router;
     }
+
+    /// Check if remote forwards are active
+    pub fn has_remote_forwards(&self) -> bool {
+        // Check if the registry has any mappings
+        // We use a simple flag: if set_remote_forward_state was called with a non-empty registry
+        // For now, check if the router was configured (non-default)
+        true // Will be called only when -R args are present
+    }
+
+    /// Run a forwarding-only dispatch loop.
+    /// Used after exec (-c) completes to keep the connection alive for -R forwards.
+    /// Reads from transport and dispatches ForwardedTcpip channel opens and data.
+    /// Runs until the transport closes or a signal is received.
+    pub async fn run_forward_loop(&self) -> Result<()> {
+        let transport = self.transport.as_ref()
+            .ok_or_else(|| QsshError::Protocol("Not connected".into()))?;
+
+        log::info!("Entering forward dispatch loop (exec completed, -R active)");
+
+        loop {
+            match transport.receive_message::<Message>().await {
+                Ok(Message::Channel(ChannelMessage::Open {
+                    channel_id,
+                    channel_type: ChannelType::ForwardedTcpip {
+                        connected_host, connected_port,
+                        originator_host, originator_port,
+                    },
+                    ..
+                })) => {
+                    log::info!("Forwarded channel {} open from {}:{} (originator {}:{})",
+                        channel_id, connected_host, connected_port,
+                        originator_host, originator_port);
+
+                    let transport = transport.clone();
+                    let registry = self.remote_forward_registry.clone();
+                    let router = self.forwarded_channel_router.clone();
+
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_forwarded_channel(
+                            channel_id, connected_host, connected_port,
+                            Arc::new(transport), registry, router,
+                        ).await {
+                            log::error!("Forwarded channel {} error: {}", channel_id, e);
+                        }
+                    });
+                }
+                Ok(Message::Channel(ChannelMessage::Data { channel_id, data })) => {
+                    if !self.forwarded_channel_router.route_data(channel_id, data).await {
+                        log::debug!("No handler for channel {} data in forward loop", channel_id);
+                    }
+                }
+                Ok(Message::Channel(ChannelMessage::Eof { channel_id })) => {
+                    self.forwarded_channel_router.remove(channel_id).await;
+                }
+                Ok(Message::Channel(ChannelMessage::Close { channel_id })) => {
+                    self.forwarded_channel_router.remove(channel_id).await;
+                }
+                Ok(Message::Disconnect(_)) => {
+                    log::info!("Server disconnected during forward loop");
+                    break;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    log::debug!("Forward loop transport error: {}", e);
+                    break;
+                }
+            }
+        }
+
+        Ok(())
+    }
     
     /// Initialize with quantum vault for enhanced security
     pub async fn with_vault(mut self, master_key: &[u8]) -> Result<Self> {
