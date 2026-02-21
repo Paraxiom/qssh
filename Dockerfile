@@ -1,5 +1,5 @@
 # QSSH - Quantum Secure Shell Docker Image
-FROM rust:1.70-slim-bullseye AS builder
+FROM rust:1.85-slim-bookworm AS builder
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
@@ -36,12 +36,12 @@ COPY docs/ docs/
 RUN cargo build --release --bin qssh --bin qsshd --bin qscp
 
 # Runtime image
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
-    libssl1.1 \
+    libssl3 \
     libgmp10 \
     && rm -rf /var/lib/apt/lists/*
 
