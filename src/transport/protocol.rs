@@ -36,6 +36,13 @@ pub enum Message {
     
     /// Key rotation
     Rekey(RekeyMessage),
+
+    /// Global request (not channel-specific, e.g., remote port forwarding)
+    GlobalRequest(GlobalRequestMessage),
+    /// Global request success response
+    GlobalRequestSuccess(GlobalRequestSuccessMessage),
+    /// Global request failure
+    GlobalRequestFailure,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,6 +234,29 @@ pub enum Extension {
     NoDelay(bool),
     QkdRequired(bool),
     Custom(String, Vec<u8>),
+}
+
+/// Global request message (not tied to a channel)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalRequestMessage {
+    pub request_type: GlobalRequestType,
+    pub want_reply: bool,
+}
+
+/// Types of global requests
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum GlobalRequestType {
+    /// Request the server to listen on a port and forward connections back
+    TcpipForward { bind_host: String, bind_port: u16 },
+    /// Cancel a previously requested remote forward
+    CancelTcpipForward { bind_host: String, bind_port: u16 },
+}
+
+/// Global request success response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalRequestSuccessMessage {
+    /// Actual bound port (may differ from requested if client requested 0)
+    pub bound_port: u16,
 }
 
 /// Disconnect reason codes

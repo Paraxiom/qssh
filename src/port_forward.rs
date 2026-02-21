@@ -1,13 +1,15 @@
 //! Port forwarding implementation for QSSH
 //! Supports local (-L), remote (-R), and dynamic (-D) forwarding
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use crate::{Result, QsshError};
-use crate::transport::{Transport, Message, ChannelMessage, ChannelType};
+use crate::transport::{Transport, Message, ChannelMessage, ChannelType,
+    GlobalRequestMessage, GlobalRequestType, GlobalRequestSuccessMessage};
 
 /// Port forwarding types
 #[derive(Debug, Clone)]
@@ -33,10 +35,89 @@ pub enum ForwardType {
     },
 }
 
+/// Registry mapping (bind_host, bind_port) on the server to (local_host, local_port) on the client.
+/// Used by the client to know where to connect when a ForwardedTcpip channel arrives.
+#[derive(Debug, Clone)]
+pub struct RemoteForwardRegistry {
+    mappings: Arc<Mutex<HashMap<(String, u16), (String, u16)>>>,
+}
+
+impl RemoteForwardRegistry {
+    pub fn new() -> Self {
+        Self {
+            mappings: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Register a remote forward mapping
+    pub async fn insert(&self, bind_host: String, bind_port: u16, local_host: String, local_port: u16) {
+        let mut map = self.mappings.lock().await;
+        map.insert((bind_host, bind_port), (local_host, local_port));
+    }
+
+    /// Look up the local target for an incoming forwarded connection
+    pub async fn lookup(&self, connected_host: &str, connected_port: u16) -> Option<(String, u16)> {
+        let map = self.mappings.lock().await;
+        map.get(&(connected_host.to_string(), connected_port)).cloned()
+    }
+
+    /// Remove a mapping
+    pub async fn remove(&self, bind_host: &str, bind_port: u16) -> Option<(String, u16)> {
+        let mut map = self.mappings.lock().await;
+        map.remove(&(bind_host.to_string(), bind_port))
+    }
+}
+
+/// Routes channel data from the client's message loop to active forwarded connections.
+/// When a ForwardedTcpip channel is set up, a sender is registered here. The client's
+/// message loop dispatches `ChannelMessage::Data` to the matching sender.
+#[derive(Debug, Clone)]
+pub struct ForwardedChannelRouter {
+    senders: Arc<Mutex<HashMap<u32, mpsc::Sender<Vec<u8>>>>>,
+}
+
+impl ForwardedChannelRouter {
+    pub fn new() -> Self {
+        Self {
+            senders: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Register a sender for a channel
+    pub async fn register(&self, channel_id: u32, sender: mpsc::Sender<Vec<u8>>) {
+        let mut map = self.senders.lock().await;
+        map.insert(channel_id, sender);
+    }
+
+    /// Route data to a channel's handler. Returns true if routed, false if no handler.
+    pub async fn route_data(&self, channel_id: u32, data: Vec<u8>) -> bool {
+        let map = self.senders.lock().await;
+        if let Some(sender) = map.get(&channel_id) {
+            sender.send(data).await.is_ok()
+        } else {
+            false
+        }
+    }
+
+    /// Check if a channel has a registered handler
+    pub async fn has_channel(&self, channel_id: u32) -> bool {
+        let map = self.senders.lock().await;
+        map.contains_key(&channel_id)
+    }
+
+    /// Remove a channel's handler (called when the channel closes)
+    pub async fn remove(&self, channel_id: u32) {
+        let mut map = self.senders.lock().await;
+        map.remove(&channel_id);
+    }
+}
+
 /// Port forwarding manager
 pub struct PortForwardManager {
     transport: Arc<Transport>,
     forwards: Vec<ForwardType>,
+    remote_registry: RemoteForwardRegistry,
+    channel_router: ForwardedChannelRouter,
 }
 
 impl PortForwardManager {
@@ -44,7 +125,19 @@ impl PortForwardManager {
         Self {
             transport,
             forwards: Vec::new(),
+            remote_registry: RemoteForwardRegistry::new(),
+            channel_router: ForwardedChannelRouter::new(),
         }
+    }
+
+    /// Get a clone of the remote forward registry (for sharing with the client message handler)
+    pub fn remote_registry(&self) -> RemoteForwardRegistry {
+        self.remote_registry.clone()
+    }
+
+    /// Get a clone of the forwarded channel router (for sharing with the client message handler)
+    pub fn channel_router(&self) -> ForwardedChannelRouter {
+        self.channel_router.clone()
     }
     
     /// Parse forwarding spec (e.g., "8080:localhost:80")
@@ -147,9 +240,8 @@ impl PortForwardManager {
                 ForwardType::Local { bind_addr, remote_host, remote_port } => {
                     self.start_local_forward(bind_addr, remote_host, remote_port).await?;
                 }
-                ForwardType::Remote { .. } => {
-                    // Request remote forward from server
-                    log::warn!("Remote forwarding not yet implemented");
+                ForwardType::Remote { remote_bind_addr, local_host, local_port } => {
+                    self.start_remote_forward(remote_bind_addr, local_host, local_port).await?;
                 }
                 ForwardType::Dynamic { bind_addr } => {
                     self.start_socks_proxy(bind_addr).await?;
@@ -157,6 +249,62 @@ impl PortForwardManager {
             }
         }
         Ok(())
+    }
+
+    /// Start remote port forwarding (-R)
+    ///
+    /// Sends a GlobalRequest(TcpipForward) to the server asking it to listen on
+    /// `remote_bind_addr`. When the server accepts connections on that port, it
+    /// opens ForwardedTcpip channels back to us; the client-side handler connects
+    /// those to `local_host:local_port`.
+    pub async fn start_remote_forward(
+        &self,
+        remote_bind_addr: SocketAddr,
+        local_host: String,
+        local_port: u16,
+    ) -> Result<()> {
+        let bind_host = remote_bind_addr.ip().to_string();
+        let bind_port = remote_bind_addr.port();
+
+        log::info!("Requesting remote forward: {}:{} (server) -> {}:{} (local)",
+            bind_host, bind_port, local_host, local_port);
+
+        // Send TcpipForward global request
+        let request = Message::GlobalRequest(GlobalRequestMessage {
+            request_type: GlobalRequestType::TcpipForward {
+                bind_host: bind_host.clone(),
+                bind_port,
+            },
+            want_reply: true,
+        });
+        self.transport.send_message(&request).await?;
+
+        // Wait for success or failure
+        let reply = self.transport.receive_message::<Message>().await?;
+        match reply {
+            Message::GlobalRequestSuccess(success) => {
+                let actual_port = success.bound_port;
+                log::info!("Remote forward established: server listening on {}:{}",
+                    bind_host, actual_port);
+
+                // Register mapping so handle_forwarded_channel knows where to connect
+                self.remote_registry.insert(
+                    bind_host, actual_port, local_host, local_port,
+                ).await;
+
+                Ok(())
+            }
+            Message::GlobalRequestFailure => {
+                Err(QsshError::Protocol(format!(
+                    "Server refused remote forward on {}:{}", bind_host, bind_port
+                )))
+            }
+            other => {
+                Err(QsshError::Protocol(format!(
+                    "Unexpected reply to TcpipForward request: {:?}", other
+                )))
+            }
+        }
     }
     
     /// Start SOCKS proxy for dynamic forwarding
@@ -273,6 +421,98 @@ async fn handle_local_forward(
     Ok(())
 }
 
+/// Handle an incoming ForwardedTcpip channel from the server (remote forward, client side).
+///
+/// The server opened a channel because someone connected to the remotely-forwarded port.
+/// We look up the registry to find the local target, connect to it, accept the channel,
+/// register the channel in the router so the message loop can feed data, and bridge
+/// data bidirectionally.
+pub async fn handle_forwarded_channel(
+    channel_id: u32,
+    connected_host: String,
+    connected_port: u16,
+    transport: Arc<Transport>,
+    registry: RemoteForwardRegistry,
+    router: ForwardedChannelRouter,
+) -> Result<()> {
+    // Look up local target
+    let (local_host, local_port) = registry
+        .lookup(&connected_host, connected_port)
+        .await
+        .ok_or_else(|| QsshError::Protocol(format!(
+            "No remote forward registered for {}:{}", connected_host, connected_port
+        )))?;
+
+    log::info!("Forwarded channel {} for {}:{} -> connecting to {}:{}",
+        channel_id, connected_host, connected_port, local_host, local_port);
+
+    // Connect to local target
+    let local_addr = format!("{}:{}", local_host, local_port);
+    let local_stream = TcpStream::connect(&local_addr).await
+        .map_err(|e| QsshError::Connection(format!(
+            "Failed to connect to local target {}: {}", local_addr, e
+        )))?;
+
+    // Accept the channel
+    let accept = Message::Channel(ChannelMessage::Accept {
+        channel_id,
+        sender_channel: channel_id,
+        window_size: 1024 * 1024,
+        max_packet_size: 32768,
+    });
+    transport.send_message(&accept).await?;
+
+    // Bridge: local TCP stream <-> channel data (bidirectional)
+    let (mut read_half, mut write_half) = local_stream.into_split();
+
+    // Register an mpsc sender so the client's message loop can feed channel data to us
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(256);
+    router.register(channel_id, tx).await;
+
+    // Local TCP -> channel (read from local, send as channel data to server)
+    let transport_send = transport.clone();
+    let local_to_channel = tokio::spawn(async move {
+        let mut buffer = vec![0u8; 8192];
+        loop {
+            match read_half.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    let data_msg = Message::Channel(ChannelMessage::Data {
+                        channel_id,
+                        data: buffer[..n].to_vec(),
+                    });
+                    if transport_send.send_message(&data_msg).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Channel -> local TCP (receive data from router's mpsc, write to local TCP)
+    let channel_to_local = tokio::spawn(async move {
+        while let Some(data) = rx.recv().await {
+            if write_half.write_all(&data).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Wait for either direction to finish
+    tokio::select! {
+        _ = local_to_channel => {}
+        _ = channel_to_local => {}
+    }
+
+    // Cleanup: remove from router, send EOF
+    router.remove(channel_id).await;
+    let eof_msg = Message::Channel(ChannelMessage::Eof { channel_id });
+    let _ = transport.send_message(&eof_msg).await;
+
+    Ok(())
+}
+
 /// Handle SOCKS5 connection
 async fn handle_socks_connection(
     mut stream: TcpStream,
@@ -325,11 +565,11 @@ async fn handle_socks_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_parse_local_forward() {
         let forward = PortForwardManager::parse_forward_spec("8080:localhost:80", "local").unwrap();
-        
+
         match forward {
             ForwardType::Local { bind_addr, remote_host, remote_port } => {
                 assert_eq!(bind_addr.port(), 8080);
@@ -339,16 +579,145 @@ mod tests {
             _ => panic!("Wrong forward type"),
         }
     }
-    
+
+    #[test]
+    fn test_parse_remote_forward() {
+        let forward = PortForwardManager::parse_forward_spec("9090:localhost:8080", "remote").unwrap();
+
+        match forward {
+            ForwardType::Remote { remote_bind_addr, local_host, local_port } => {
+                assert_eq!(remote_bind_addr.port(), 9090);
+                assert_eq!(remote_bind_addr.ip().to_string(), "0.0.0.0");
+                assert_eq!(local_host, "localhost");
+                assert_eq!(local_port, 8080);
+            }
+            _ => panic!("Wrong forward type"),
+        }
+    }
+
+    #[test]
+    fn test_parse_remote_forward_different_ports() {
+        let forward = PortForwardManager::parse_forward_spec("443:127.0.0.1:3000", "remote").unwrap();
+
+        match forward {
+            ForwardType::Remote { remote_bind_addr, local_host, local_port } => {
+                assert_eq!(remote_bind_addr.port(), 443);
+                assert_eq!(local_host, "127.0.0.1");
+                assert_eq!(local_port, 3000);
+            }
+            _ => panic!("Wrong forward type"),
+        }
+    }
+
+    #[test]
+    fn test_parse_remote_forward_invalid() {
+        // Missing local port
+        assert!(PortForwardManager::parse_forward_spec("9090:localhost", "remote").is_err());
+        // Not a number
+        assert!(PortForwardManager::parse_forward_spec("abc:localhost:8080", "remote").is_err());
+    }
+
     #[test]
     fn test_parse_dynamic_forward() {
         let forward = PortForwardManager::parse_forward_spec("1080", "dynamic").unwrap();
-        
+
         match forward {
             ForwardType::Dynamic { bind_addr } => {
                 assert_eq!(bind_addr.port(), 1080);
             }
             _ => panic!("Wrong forward type"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_remote_forward_registry_insert_lookup() {
+        let registry = RemoteForwardRegistry::new();
+
+        // Insert a mapping
+        registry.insert("0.0.0.0".into(), 9090, "localhost".into(), 8080).await;
+
+        // Lookup should succeed
+        let result = registry.lookup("0.0.0.0", 9090).await;
+        assert_eq!(result, Some(("localhost".to_string(), 8080)));
+
+        // Lookup for non-existent should return None
+        let result = registry.lookup("0.0.0.0", 9999).await;
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_remote_forward_registry_remove() {
+        let registry = RemoteForwardRegistry::new();
+
+        registry.insert("0.0.0.0".into(), 9090, "localhost".into(), 8080).await;
+
+        // Remove should return the mapping
+        let removed = registry.remove("0.0.0.0", 9090).await;
+        assert_eq!(removed, Some(("localhost".to_string(), 8080)));
+
+        // Lookup should now fail
+        assert_eq!(registry.lookup("0.0.0.0", 9090).await, None);
+
+        // Remove again should return None
+        assert_eq!(registry.remove("0.0.0.0", 9090).await, None);
+    }
+
+    #[tokio::test]
+    async fn test_remote_forward_registry_multiple_entries() {
+        let registry = RemoteForwardRegistry::new();
+
+        registry.insert("0.0.0.0".into(), 9090, "localhost".into(), 8080).await;
+        registry.insert("0.0.0.0".into(), 9091, "localhost".into(), 3000).await;
+        registry.insert("127.0.0.1".into(), 443, "10.0.0.1".into(), 443).await;
+
+        assert_eq!(registry.lookup("0.0.0.0", 9090).await, Some(("localhost".to_string(), 8080)));
+        assert_eq!(registry.lookup("0.0.0.0", 9091).await, Some(("localhost".to_string(), 3000)));
+        assert_eq!(registry.lookup("127.0.0.1", 443).await, Some(("10.0.0.1".to_string(), 443)));
+    }
+
+    #[tokio::test]
+    async fn test_forwarded_channel_router() {
+        let router = ForwardedChannelRouter::new();
+
+        // No channel registered
+        assert!(!router.has_channel(1).await);
+        assert!(!router.route_data(1, vec![1, 2, 3]).await);
+
+        // Register a channel
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        router.register(1, tx).await;
+
+        assert!(router.has_channel(1).await);
+
+        // Route data
+        assert!(router.route_data(1, vec![42, 43]).await);
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received, vec![42, 43]);
+
+        // Remove channel
+        router.remove(1).await;
+        assert!(!router.has_channel(1).await);
+    }
+
+    #[tokio::test]
+    async fn test_forwarded_channel_router_multiple_channels() {
+        let router = ForwardedChannelRouter::new();
+
+        let (tx1, mut rx1) = tokio::sync::mpsc::channel(16);
+        let (tx2, mut rx2) = tokio::sync::mpsc::channel(16);
+
+        router.register(100, tx1).await;
+        router.register(200, tx2).await;
+
+        // Route to channel 100
+        assert!(router.route_data(100, vec![1]).await);
+        assert_eq!(rx1.recv().await.unwrap(), vec![1]);
+
+        // Route to channel 200
+        assert!(router.route_data(200, vec![2]).await);
+        assert_eq!(rx2.recv().await.unwrap(), vec![2]);
+
+        // Channel 300 doesn't exist
+        assert!(!router.route_data(300, vec![3]).await);
     }
 }

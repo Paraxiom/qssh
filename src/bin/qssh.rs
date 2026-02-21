@@ -6,6 +6,7 @@ use qssh::config::ConfigParser;
 use qssh::port_forward::{PortForwardManager, ForwardType};
 use log::info;
 use std::process;
+use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[clap(name = "qssh")]
@@ -217,12 +218,49 @@ async fn main() {
         }
     }
     
+    // Parse remote forward specs
+    let mut remote_forwards = Vec::new();
+    for spec in &args.remote {
+        match PortForwardManager::parse_forward_spec(spec, "remote") {
+            Ok(fwd) => remote_forwards.push(fwd),
+            Err(e) => {
+                eprintln!("Error: Invalid remote forward spec '{}': {}", spec, e);
+                process::exit(1);
+            }
+        }
+    }
+
     // Create client and connect
     let mut client = QsshClient::new(config);
-    
+
     match client.connect().await {
         Ok(()) => {
             info!("Connected successfully!");
+
+            // Set up remote forwards (-R) before shell
+            if !remote_forwards.is_empty() {
+                if let Some(transport) = client.transport() {
+                    let transport = Arc::new(transport.clone());
+                    let mut pfm = PortForwardManager::new(transport);
+                    for fwd in remote_forwards {
+                        pfm.add_forward(fwd);
+                    }
+                    match pfm.start_all().await {
+                        Ok(()) => {
+                            info!("Remote forwards established");
+                            // Share the registry and router with the client for message dispatch
+                            client.set_remote_forward_state(
+                                pfm.remote_registry(),
+                                pfm.channel_router(),
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("Error setting up remote forwards: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+            }
 
             // Enable X11 forwarding if requested
             if args.x11 || args.trusted_x11 {

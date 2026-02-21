@@ -6,6 +6,7 @@ use crate::{
     handshake::ClientHandshake,
     vault::{QuantumVault, KeyType},
     x11::{X11Forwarder, setup_x11_forwarding},
+    port_forward::{RemoteForwardRegistry, ForwardedChannelRouter, handle_forwarded_channel},
 };
 use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -18,6 +19,8 @@ pub struct QsshClient {
     channel_manager: Arc<ChannelManager>,
     vault: Option<Arc<QuantumVault>>,
     x11_forwarder: Option<X11Forwarder>,
+    remote_forward_registry: RemoteForwardRegistry,
+    forwarded_channel_router: ForwardedChannelRouter,
 }
 
 impl QsshClient {
@@ -29,7 +32,15 @@ impl QsshClient {
             channel_manager: Arc::new(ChannelManager::new()),
             vault: None,
             x11_forwarder: None,
+            remote_forward_registry: RemoteForwardRegistry::new(),
+            forwarded_channel_router: ForwardedChannelRouter::new(),
         }
+    }
+
+    /// Set the remote forward registry and channel router (called by bin/qssh after setting up remote forwards)
+    pub fn set_remote_forward_state(&mut self, registry: RemoteForwardRegistry, router: ForwardedChannelRouter) {
+        self.remote_forward_registry = registry;
+        self.forwarded_channel_router = router;
     }
     
     /// Initialize with quantum vault for enhanced security
@@ -69,6 +80,11 @@ impl QsshClient {
         }
         
         Ok(())
+    }
+
+    /// Get a reference to the transport (for setting up remote forwards before shell)
+    pub fn transport(&self) -> Option<&Transport> {
+        self.transport.as_ref()
     }
 
     /// Enable X11 forwarding
@@ -336,7 +352,11 @@ impl QsshClient {
         // Clone transport for reading in separate task
         let transport_read = transport.clone();
         let transport_write = transport.clone();
-        
+
+        // Clone remote forward state for the read task
+        let registry = self.remote_forward_registry.clone();
+        let router = self.forwarded_channel_router.clone();
+
         // Spawn task to handle incoming messages from server
         let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
         let read_task = tokio::spawn(async move {
@@ -353,13 +373,52 @@ impl QsshClient {
                             break;
                         }
                     }
+                    // Route data to active forwarded channels (remote -R forwards)
+                    Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data })) => {
+                        if !router.route_data(ch_id, data).await {
+                            log::debug!("No handler for channel {} data, ignoring", ch_id);
+                        }
+                    }
+                    // Handle incoming ForwardedTcpip channel opens (server asking us to accept a remote-forwarded connection)
+                    Ok(Message::Channel(ChannelMessage::Open {
+                        channel_id: ch_id,
+                        channel_type: ChannelType::ForwardedTcpip { connected_host, connected_port, .. },
+                        ..
+                    })) => {
+                        log::info!("Server opened ForwardedTcpip channel {} for {}:{}",
+                            ch_id, connected_host, connected_port);
+                        let transport_fwd = transport_read.clone();
+                        let registry_fwd = registry.clone();
+                        let router_fwd = router.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_forwarded_channel(
+                                ch_id,
+                                connected_host.clone(),
+                                connected_port,
+                                Arc::new(transport_fwd),
+                                registry_fwd,
+                                router_fwd,
+                            ).await {
+                                log::error!("Forwarded channel {} error: {}", ch_id, e);
+                            }
+                        });
+                    }
+                    // Handle channel close for forwarded channels
+                    Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) if ch_id == channel_id => {
+                        log::info!("Server closed channel {}", ch_id);
+                        break;
+                    }
+                    Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) => {
+                        log::debug!("Channel {} closed", ch_id);
+                        router.remove(ch_id).await;
+                    }
                     Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id })) if ch_id == channel_id => {
                         log::info!("Received EOF for channel {}", ch_id);
                         break;
                     }
-                    Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) if ch_id == channel_id => {
-                        log::info!("Server closed channel {}", ch_id);
-                        break;
+                    Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id })) => {
+                        log::debug!("Channel {} EOF", ch_id);
+                        router.remove(ch_id).await;
                     }
                     Ok(msg) => {
                         log::debug!("Received other message: {:?}", msg);

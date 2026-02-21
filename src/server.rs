@@ -3,11 +3,13 @@
 use crate::{
     Result, QsshError,
     crypto::PqKeyExchange,
-    transport::{Transport, Message, ChannelMessage, ChannelType},
+    transport::{Transport, Message, ChannelMessage, ChannelType,
+        GlobalRequestMessage, GlobalRequestType, GlobalRequestSuccessMessage},
     handshake::ServerHandshake,
     shell_handler_thread::ShellSessionThread,
 };
 use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -116,6 +118,28 @@ struct Channel {
     channel_type: ChannelType,
 }
 
+/// State for remote forwarding listeners on the server side.
+/// Tracks active listeners so they can be cancelled and cleaned up.
+struct RemoteForwardState {
+    listeners: HashMap<(String, u16), tokio::task::JoinHandle<()>>,
+}
+
+impl RemoteForwardState {
+    fn new() -> Self {
+        Self {
+            listeners: HashMap::new(),
+        }
+    }
+
+    /// Abort all active listeners (called on client disconnect)
+    fn abort_all(&mut self) {
+        for ((host, port), handle) in self.listeners.drain() {
+            log::info!("Cancelling remote forward listener on {}:{}", host, port);
+            handle.abort();
+        }
+    }
+}
+
 /// Handle a client connection
 async fn handle_connection(
     stream: TcpStream,
@@ -143,20 +167,25 @@ async fn handle_connection(
         let mut conns = connections.lock().await;
         conns.insert(username.clone(), connection);
     }
-    
+
+    // Remote forward state for this connection
+    let remote_forward_state = Arc::new(Mutex::new(RemoteForwardState::new()));
+
     // Handle messages
     loop {
         log::debug!("Main loop waiting for message...");
         match transport.receive_message::<Message>().await {
             Ok(msg) => {
-                log::debug!("Main loop received message: {:?}", 
+                log::debug!("Main loop received message: {:?}",
                     match &msg {
                         Message::Channel(ChannelMessage::ShellRequest { .. }) => "ShellRequest",
                         Message::Channel(ChannelMessage::Data { .. }) => "Data",
                         _ => "Other"
                     });
-                
-                if let Err(e) = handle_client_message(msg, &transport, &username, &connections).await {
+
+                if let Err(e) = handle_client_message(
+                    msg, &transport, &username, &connections, &remote_forward_state,
+                ).await {
                     // Check if this is the special shell completion signal
                     if let QsshError::Protocol(ref msg) = e {
                         if msg == "SHELL_SESSION_COMPLETE" {
@@ -174,15 +203,21 @@ async fn handle_connection(
             }
         }
     }
-    
+
+    // Clean up remote forward listeners
+    {
+        let mut rfs = remote_forward_state.lock().await;
+        rfs.abort_all();
+    }
+
     // Remove connection
     {
         let mut conns = connections.lock().await;
         conns.remove(&username);
     }
-    
+
     log::info!("User {} disconnected", username);
-    
+
     Ok(())
 }
 
@@ -192,10 +227,14 @@ async fn handle_client_message(
     transport: &Transport,
     username: &str,
     connections: &Arc<Mutex<HashMap<String, ClientConnection>>>,
+    remote_forward_state: &Arc<Mutex<RemoteForwardState>>,
 ) -> Result<()> {
     match msg {
         Message::Channel(channel_msg) => {
             handle_channel_message(channel_msg, transport, username, connections).await?;
+        }
+        Message::GlobalRequest(req) => {
+            handle_global_request(req, transport, username, remote_forward_state).await?;
         }
         Message::Disconnect(d) => {
             log::info!("Client {} disconnecting: {}", username, d.description);
@@ -212,6 +251,225 @@ async fn handle_client_message(
             log::debug!("Unhandled message from {}", username);
         }
     }
+    Ok(())
+}
+
+/// Handle a global request from the client (e.g., TcpipForward for -R)
+async fn handle_global_request(
+    req: GlobalRequestMessage,
+    transport: &Transport,
+    username: &str,
+    remote_forward_state: &Arc<Mutex<RemoteForwardState>>,
+) -> Result<()> {
+    match req.request_type {
+        GlobalRequestType::TcpipForward { bind_host, bind_port } => {
+            log::info!("User {} requesting tcpip-forward on {}:{}", username, bind_host, bind_port);
+
+            // Determine the bind address — empty or "0.0.0.0" means all interfaces
+            let bind_addr = if bind_host.is_empty() || bind_host == "0.0.0.0" {
+                format!("0.0.0.0:{}", bind_port)
+            } else if bind_host == "localhost" || bind_host == "127.0.0.1" {
+                format!("127.0.0.1:{}", bind_port)
+            } else {
+                format!("{}:{}", bind_host, bind_port)
+            };
+
+            // Try to bind the listener
+            match TcpListener::bind(&bind_addr).await {
+                Ok(listener) => {
+                    let actual_port = listener.local_addr()
+                        .map(|a| a.port())
+                        .unwrap_or(bind_port);
+
+                    log::info!("Remote forward listener bound on {} (actual port {})", bind_addr, actual_port);
+
+                    // Reply success
+                    if req.want_reply {
+                        transport.send_message(&Message::GlobalRequestSuccess(
+                            GlobalRequestSuccessMessage { bound_port: actual_port }
+                        )).await?;
+                    }
+
+                    // Spawn the accept loop
+                    let transport_clone = transport.clone();
+                    let bind_host_clone = bind_host.clone();
+                    let handle = tokio::spawn(async move {
+                        handle_remote_forward_listener(
+                            listener, transport_clone, bind_host_clone, actual_port,
+                        ).await;
+                    });
+
+                    // Store the listener handle for cleanup
+                    let mut rfs = remote_forward_state.lock().await;
+                    rfs.listeners.insert((bind_host, actual_port), handle);
+                }
+                Err(e) => {
+                    log::error!("Failed to bind remote forward on {}: {}", bind_addr, e);
+                    if req.want_reply {
+                        transport.send_message(&Message::GlobalRequestFailure).await?;
+                    }
+                }
+            }
+        }
+        GlobalRequestType::CancelTcpipForward { bind_host, bind_port } => {
+            log::info!("User {} cancelling tcpip-forward on {}:{}", username, bind_host, bind_port);
+
+            let mut rfs = remote_forward_state.lock().await;
+            if let Some(handle) = rfs.listeners.remove(&(bind_host.clone(), bind_port)) {
+                handle.abort();
+                log::info!("Cancelled remote forward on {}:{}", bind_host, bind_port);
+                if req.want_reply {
+                    transport.send_message(&Message::GlobalRequestSuccess(
+                        GlobalRequestSuccessMessage { bound_port: bind_port }
+                    )).await?;
+                }
+            } else {
+                log::warn!("No active remote forward on {}:{}", bind_host, bind_port);
+                if req.want_reply {
+                    transport.send_message(&Message::GlobalRequestFailure).await?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Accept loop for a remote-forwarded port on the server.
+/// For each incoming TCP connection, opens a ForwardedTcpip channel back to the client
+/// and bridges data bidirectionally.
+async fn handle_remote_forward_listener(
+    listener: TcpListener,
+    transport: Transport,
+    bind_host: String,
+    bind_port: u16,
+) {
+    loop {
+        match listener.accept().await {
+            Ok((stream, peer_addr)) => {
+                log::info!("Remote forward connection from {} on {}:{}", peer_addr, bind_host, bind_port);
+
+                let transport = transport.clone();
+                let bind_host = bind_host.clone();
+                let originator_host = peer_addr.ip().to_string();
+                let originator_port = peer_addr.port();
+
+                tokio::spawn(async move {
+                    if let Err(e) = handle_remote_forward_connection(
+                        stream, transport, bind_host, bind_port,
+                        originator_host, originator_port,
+                    ).await {
+                        log::error!("Remote forward connection error: {}", e);
+                    }
+                });
+            }
+            Err(e) => {
+                log::error!("Remote forward accept error on {}:{}: {}", bind_host, bind_port, e);
+                break;
+            }
+        }
+    }
+}
+
+/// Handle a single connection to a remote-forwarded port.
+/// Opens a ForwardedTcpip channel to the client, waits for Accept, then bridges data.
+async fn handle_remote_forward_connection(
+    tcp_stream: TcpStream,
+    transport: Transport,
+    bind_host: String,
+    bind_port: u16,
+    originator_host: String,
+    originator_port: u16,
+) -> Result<()> {
+    // Generate channel ID
+    let channel_id = rand::random::<u32>() % 65536;
+
+    // Open a ForwardedTcpip channel to the client
+    let open_msg = Message::Channel(ChannelMessage::Open {
+        channel_id,
+        channel_type: ChannelType::ForwardedTcpip {
+            connected_host: bind_host.clone(),
+            connected_port: bind_port,
+            originator_host: originator_host.clone(),
+            originator_port,
+        },
+        window_size: 1024 * 1024,
+        max_packet_size: 32768,
+    });
+
+    transport.send_message(&open_msg).await?;
+
+    // Wait for Accept from client
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() > std::time::Duration::from_secs(10) {
+            return Err(QsshError::Protocol("Timeout waiting for channel accept from client".into()));
+        }
+
+        match transport.receive_message::<Message>().await {
+            Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch_id, .. })) if ch_id == channel_id => {
+                log::debug!("Client accepted forwarded channel {}", channel_id);
+                break;
+            }
+            Ok(_) => {
+                // Ignore other messages while waiting for accept
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    // Bridge: TCP stream <-> channel data (bidirectional)
+    let (mut tcp_read, mut tcp_write) = tcp_stream.into_split();
+
+    // TCP -> channel
+    let transport_send = transport.clone();
+    let tcp_to_channel = tokio::spawn(async move {
+        let mut buffer = vec![0u8; 8192];
+        loop {
+            match tcp_read.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    let data_msg = Message::Channel(ChannelMessage::Data {
+                        channel_id,
+                        data: buffer[..n].to_vec(),
+                    });
+                    if transport_send.send_message(&data_msg).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Channel -> TCP (read channel data from transport, write to TCP)
+    let channel_to_tcp = tokio::spawn(async move {
+        loop {
+            match transport.receive_message::<Message>().await {
+                Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data })) if ch_id == channel_id => {
+                    if tcp_write.write_all(&data).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id })) if ch_id == channel_id => {
+                    log::debug!("Channel {} EOF from client", channel_id);
+                    break;
+                }
+                Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) if ch_id == channel_id => {
+                    log::debug!("Channel {} closed by client", channel_id);
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Wait for either direction to finish
+    tokio::select! {
+        _ = tcp_to_channel => {}
+        _ = channel_to_tcp => {}
+    }
+
     Ok(())
 }
 
