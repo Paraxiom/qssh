@@ -7,9 +7,9 @@ services:
     ports:
       - "0.0.0.0:22222:22222"
     volumes:
+      - qssh_etc:/etc/qssh
       - qssh_keys:/home/qssh/.qssh
       - qssh_logs:/var/log/qssh
-      - ./qsshd.config.production:/etc/qssh/qsshd.conf:ro
     environment:
       - QSSH_LOG_LEVEL=info
       - QSSH_MAX_CONNECTIONS=100
@@ -65,6 +65,8 @@ networks:
         - subnet: 172.21.0.0/16
 
 volumes:
+  qssh_etc:
+    driver: local
   qssh_keys:
     driver: local
   qssh_client_keys:
