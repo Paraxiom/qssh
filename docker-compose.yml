@@ -8,7 +8,7 @@ services:
       - "0.0.0.0:22222:22222"
     volumes:
       - qssh_etc:/etc/qssh
-      - qssh_keys:/home/qssh/.qssh
+      - qssh_home:/home
       - qssh_logs:/var/log/qssh
     environment:
       - QSSH_LOG_LEVEL=info
@@ -67,7 +67,7 @@ networks:
 volumes:
   qssh_etc:
     driver: local
-  qssh_keys:
+  qssh_home:
     driver: local
   qssh_client_keys:
     driver: local
