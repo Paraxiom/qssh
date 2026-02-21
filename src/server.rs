@@ -493,17 +493,106 @@ async fn handle_channel_message(
     match msg {
         ChannelMessage::Open { channel_id, channel_type, window_size, max_packet_size } => {
             log::info!("User {} opening channel {} ({:?})", username, channel_id, channel_type);
-            
-            // Accept channel
+
+            // Handle DirectTcpip channel opens (local port forwarding, -L)
+            if let ChannelType::DirectTcpip { ref host, port, .. } = channel_type {
+                let target_host = host.clone();
+                let target_port = port;
+                let target_addr = format!("{}:{}", target_host, target_port);
+                log::info!("DirectTcpip forward: connecting to {}", target_addr);
+
+                match TcpStream::connect(&target_addr).await {
+                    Ok(tcp_stream) => {
+                        // Accept the channel
+                        let accept = Message::Channel(ChannelMessage::Accept {
+                            channel_id,
+                            sender_channel: channel_id,
+                            window_size,
+                            max_packet_size,
+                        });
+                        transport.send_message(&accept).await?;
+
+                        // Register channel with router for data dispatch
+                        let (data_tx, mut data_rx) = mpsc::channel::<Vec<u8>>(256);
+                        channel_router.register(channel_id, data_tx).await;
+
+                        // Bridge TCP stream <-> channel data
+                        let transport_bridge = transport.clone();
+                        let channel_router_bridge = channel_router.clone();
+                        tokio::spawn(async move {
+                            let (mut tcp_read, mut tcp_write) = tcp_stream.into_split();
+
+                            // TCP -> channel (forward data from target to client)
+                            let transport_out = transport_bridge.clone();
+                            let tcp_to_channel = tokio::spawn(async move {
+                                let mut buf = vec![0u8; 8192];
+                                loop {
+                                    match tcp_read.read(&mut buf).await {
+                                        Ok(0) => break,
+                                        Ok(n) => {
+                                            let msg = Message::Channel(ChannelMessage::Data {
+                                                channel_id,
+                                                data: buf[..n].to_vec(),
+                                            });
+                                            if transport_out.send_message(&msg).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                            });
+
+                            // Channel -> TCP (forward data from client to target)
+                            let channel_to_tcp = tokio::spawn(async move {
+                                while let Some(data) = data_rx.recv().await {
+                                    if data.is_empty() { continue; }
+                                    if tcp_write.write_all(&data).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            });
+
+                            tokio::select! {
+                                _ = tcp_to_channel => {}
+                                _ = channel_to_tcp => {}
+                            }
+
+                            channel_router_bridge.remove(channel_id).await;
+                            let eof = Message::Channel(ChannelMessage::Eof { channel_id });
+                            let _ = transport_bridge.send_message(&eof).await;
+                            log::debug!("DirectTcpip bridge ended for channel {}", channel_id);
+                        });
+                    }
+                    Err(e) => {
+                        log::error!("Failed to connect to {}: {}", target_addr, e);
+                        // Reject the channel by sending close
+                        let close = Message::Channel(ChannelMessage::Close { channel_id });
+                        transport.send_message(&close).await?;
+                    }
+                }
+
+                // Store channel
+                let mut conns = connections.lock().await;
+                if let Some(conn) = conns.get_mut(username) {
+                    conn.channels.insert(channel_id, Channel {
+                        id: channel_id,
+                        channel_type,
+                    });
+                }
+                return Ok(());
+            }
+
+            // Accept channel (non-DirectTcpip)
             let accept = Message::Channel(ChannelMessage::Accept {
                 channel_id,
                 sender_channel: channel_id,
                 window_size,
                 max_packet_size,
             });
-            
+
             transport.send_message(&accept).await?;
-            
+
             // Store channel
             let mut conns = connections.lock().await;
             if let Some(conn) = conns.get_mut(username) {
@@ -618,6 +707,70 @@ async fn handle_channel_message(
 
             // Handle subsystem request
             handle_subsystem_request(channel_id, subsystem, transport, username).await?;
+        }
+        ChannelMessage::ForwardRequest { channel_id, remote_host, remote_port } => {
+            // Handle ForwardRequest for DirectTcpIp channels (sent after Channel::Open with DirectTcpIp variant)
+            let target_addr = format!("{}:{}", remote_host, remote_port);
+            log::info!("User {} ForwardRequest on channel {}: {}", username, channel_id, target_addr);
+
+            match TcpStream::connect(&target_addr).await {
+                Ok(tcp_stream) => {
+                    // Register channel with router for data dispatch
+                    let (data_tx, mut data_rx) = mpsc::channel::<Vec<u8>>(256);
+                    channel_router.register(channel_id, data_tx).await;
+
+                    // Bridge TCP stream <-> channel data
+                    let transport_bridge = transport.clone();
+                    let channel_router_bridge = channel_router.clone();
+                    tokio::spawn(async move {
+                        let (mut tcp_read, mut tcp_write) = tcp_stream.into_split();
+
+                        let transport_out = transport_bridge.clone();
+                        let tcp_to_channel = tokio::spawn(async move {
+                            let mut buf = vec![0u8; 8192];
+                            loop {
+                                match tcp_read.read(&mut buf).await {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        let msg = Message::Channel(ChannelMessage::Data {
+                                            channel_id,
+                                            data: buf[..n].to_vec(),
+                                        });
+                                        if transport_out.send_message(&msg).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                        });
+
+                        let channel_to_tcp = tokio::spawn(async move {
+                            while let Some(data) = data_rx.recv().await {
+                                if data.is_empty() { continue; }
+                                if tcp_write.write_all(&data).await.is_err() {
+                                    break;
+                                }
+                            }
+                        });
+
+                        tokio::select! {
+                            _ = tcp_to_channel => {}
+                            _ = channel_to_tcp => {}
+                        }
+
+                        channel_router_bridge.remove(channel_id).await;
+                        let eof = Message::Channel(ChannelMessage::Eof { channel_id });
+                        let _ = transport_bridge.send_message(&eof).await;
+                        log::debug!("ForwardRequest bridge ended for channel {}", channel_id);
+                    });
+                }
+                Err(e) => {
+                    log::error!("ForwardRequest: failed to connect to {}: {}", target_addr, e);
+                    let close = Message::Channel(ChannelMessage::Close { channel_id });
+                    transport.send_message(&close).await?;
+                }
+            }
         }
         _ => {
             log::debug!("Unhandled channel message from {}", username);

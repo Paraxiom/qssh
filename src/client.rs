@@ -88,6 +88,10 @@ impl QsshClient {
                         }
                     });
                 }
+                Ok(Message::Channel(ChannelMessage::Accept { channel_id, .. })) => {
+                    // Route Accept to local-forward or forwarded channel handlers
+                    self.forwarded_channel_router.route_data(channel_id, Vec::new()).await;
+                }
                 Ok(Message::Channel(ChannelMessage::Data { channel_id, data })) => {
                     if !self.forwarded_channel_router.route_data(channel_id, data).await {
                         log::debug!("No handler for channel {} data in forward loop", channel_id);
@@ -473,6 +477,11 @@ impl QsshClient {
                                 log::error!("Forwarded channel {} error: {}", ch_id, e);
                             }
                         });
+                    }
+                    // Route Accept to forwarded/local-forward channel handlers
+                    Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch_id, .. })) if ch_id != channel_id => {
+                        log::debug!("Routing Accept for channel {} via router", ch_id);
+                        router.route_data(ch_id, Vec::new()).await;
                     }
                     // Handle channel close for forwarded channels
                     Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) if ch_id == channel_id => {

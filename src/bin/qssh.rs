@@ -1,9 +1,9 @@
 //! QSSH Client - Quantum-secure SSH replacement
 
 use clap::Parser;
-use qssh::{QsshConfig, PortForward, PqAlgorithm, QsshClient, security_tiers::SecurityTier};
+use qssh::{QsshConfig, PqAlgorithm, QsshClient, security_tiers::SecurityTier};
 use qssh::config::ConfigParser;
-use qssh::port_forward::{PortForwardManager, ForwardType};
+use qssh::port_forward::PortForwardManager;
 use log::info;
 use std::process;
 use std::sync::Arc;
@@ -137,15 +137,15 @@ async fn main() {
         format!("{}:{}", hostname, port)
     };
     
-    // Parse port forwards
-    let mut port_forwards = Vec::new();
-    
-    for forward in args.local {
-        if let Some(pf) = parse_port_forward(&forward) {
-            port_forwards.push(pf);
-        } else {
-            eprintln!("Error: Invalid port forward format: {}", forward);
-            process::exit(1);
+    // Parse local forward specs (-L)
+    let mut local_forwards = Vec::new();
+    for spec in &args.local {
+        match PortForwardManager::parse_forward_spec(spec, "local") {
+            Ok(fwd) => local_forwards.push(fwd),
+            Err(e) => {
+                eprintln!("Error: Invalid local forward spec '{}': {}", spec, e);
+                process::exit(1);
+            }
         }
     }
     
@@ -190,7 +190,7 @@ async fn main() {
         server: host.clone(),
         username: username.clone(),
         password,
-        port_forwards,
+        port_forwards: Vec::new(), // -L forwards handled via PortForwardManager below
         use_qkd: args.qkd,
         qkd_endpoint: args.qkd_endpoint.clone(),
         qkd_cert_path: args.qkd_cert.clone(),
@@ -239,17 +239,21 @@ async fn main() {
         Ok(()) => {
             info!("Connected successfully!");
 
-            // Set up remote forwards (-R) before shell
-            if !remote_forwards.is_empty() {
+            // Set up port forwards (-L and -R) via PortForwardManager
+            let has_forwards = !local_forwards.is_empty() || !remote_forwards.is_empty();
+            if has_forwards {
                 if let Some(transport) = client.transport() {
                     let transport = Arc::new(transport.clone());
                     let mut pfm = PortForwardManager::new(transport);
+                    for fwd in local_forwards {
+                        pfm.add_forward(fwd);
+                    }
                     for fwd in remote_forwards {
                         pfm.add_forward(fwd);
                     }
                     match pfm.start_all().await {
                         Ok(()) => {
-                            info!("Remote forwards established");
+                            info!("Port forwards established");
                             // Share the registry and router with the client for message dispatch
                             client.set_remote_forward_state(
                                 pfm.remote_registry(),
@@ -257,7 +261,7 @@ async fn main() {
                             );
                         }
                         Err(e) => {
-                            eprintln!("Error setting up remote forwards: {}", e);
+                            eprintln!("Error setting up port forwards: {}", e);
                             process::exit(1);
                         }
                     }
@@ -288,9 +292,9 @@ async fn main() {
                     }
                 }
 
-                // If remote forwards are active, keep connection alive for -R
-                if has_remote_forwards {
-                    info!("Exec completed, keeping connection alive for remote forwards");
+                // If forwards are active, keep connection alive for port forwarding
+                if has_remote_forwards || has_forwards {
+                    info!("Exec completed, keeping connection alive for port forwards");
                     info!("Press Ctrl+C to disconnect");
                     if let Err(e) = client.run_forward_loop().await {
                         log::debug!("Forward loop ended: {}", e);
@@ -321,16 +325,3 @@ async fn main() {
     }
 }
 
-fn parse_port_forward(spec: &str) -> Option<PortForward> {
-    // Parse using PortForwardManager and convert to PortForward
-    match PortForwardManager::parse_forward_spec(spec, "local") {
-        Ok(ForwardType::Local { bind_addr, remote_host, remote_port }) => {
-            Some(PortForward {
-                local_port: bind_addr.port(),
-                remote_host,
-                remote_port,
-            })
-        }
-        _ => None,
-    }
-}

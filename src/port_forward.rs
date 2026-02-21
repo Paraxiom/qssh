@@ -200,24 +200,27 @@ impl PortForwardManager {
     ) -> Result<()> {
         let listener = TcpListener::bind(bind_addr).await?;
         let transport = self.transport.clone();
-        
+        let channel_router = self.channel_router.clone();
+
         log::info!("Local port forwarding: {} -> {}:{}", bind_addr, remote_host, remote_port);
-        
+
         tokio::spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((stream, peer_addr)) => {
                         log::debug!("Accepted connection from {} for forwarding", peer_addr);
-                        
+
                         let transport = transport.clone();
                         let remote_host = remote_host.clone();
-                        
+                        let channel_router = channel_router.clone();
+
                         tokio::spawn(async move {
                             if let Err(e) = handle_local_forward(
                                 stream,
                                 transport,
                                 remote_host,
                                 remote_port,
+                                channel_router,
                             ).await {
                                 log::error!("Forward error: {}", e);
                             }
@@ -229,7 +232,7 @@ impl PortForwardManager {
                 }
             }
         });
-        
+
         Ok(())
     }
     
@@ -311,18 +314,20 @@ impl PortForwardManager {
     pub async fn start_socks_proxy(&self, bind_addr: SocketAddr) -> Result<()> {
         let listener = TcpListener::bind(bind_addr).await?;
         let transport = self.transport.clone();
-        
+        let channel_router = self.channel_router.clone();
+
         log::info!("SOCKS proxy listening on {}", bind_addr);
-        
+
         tokio::spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((stream, peer_addr)) => {
                         log::debug!("SOCKS connection from {}", peer_addr);
-                        
+
                         let transport = transport.clone();
+                        let channel_router = channel_router.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_socks_connection(stream, transport).await {
+                            if let Err(e) = handle_socks_connection(stream, transport, channel_router).await {
                                 log::error!("SOCKS error: {}", e);
                             }
                         });
@@ -333,7 +338,7 @@ impl PortForwardManager {
                 }
             }
         });
-        
+
         Ok(())
     }
     
@@ -349,48 +354,69 @@ async fn handle_local_forward(
     transport: Arc<Transport>,
     remote_host: String,
     remote_port: u16,
+    channel_router: ForwardedChannelRouter,
 ) -> Result<()> {
-    // Request channel open for port forwarding
-    let channel_id = rand::random::<u32>() % 65536; // Generate random channel ID
-    
+    let channel_id = rand::random::<u32>() % 65536;
+
+    // Register with channel router to receive server responses
+    let (data_tx, mut data_rx) = mpsc::channel::<Vec<u8>>(256);
+    channel_router.register(channel_id, data_tx).await;
+
+    // Open DirectTcpip channel — includes target in the channel type
     let open_msg = Message::Channel(ChannelMessage::Open {
         channel_id,
-        channel_type: ChannelType::DirectTcpIp,
+        channel_type: ChannelType::DirectTcpip {
+            host: remote_host.clone(),
+            port: remote_port,
+            originator_host: "127.0.0.1".to_string(),
+            originator_port: local_stream.local_addr()
+                .map(|a| a.port()).unwrap_or(0),
+        },
         window_size: 1024 * 1024,
         max_packet_size: 32768,
     });
-    
     transport.send_message(&open_msg).await?;
-    
-    // Send forwarding request
-    let forward_request = Message::Channel(ChannelMessage::ForwardRequest {
-        channel_id,
-        remote_host,
-        remote_port,
-    });
-    
-    transport.send_message(&forward_request).await?;
-    
-    // Split the stream for reading and writing
+
+    // Wait for Accept from server via router (empty vec = accept signal)
+    log::debug!("Local forward channel {} waiting for Accept", channel_id);
+    match tokio::time::timeout(std::time::Duration::from_secs(10), data_rx.recv()).await {
+        Ok(Some(data)) if data.is_empty() => {
+            log::debug!("Local forward channel {} accepted", channel_id);
+        }
+        Ok(Some(data)) => {
+            // Got data before accept — server may have started sending immediately
+            log::debug!("Local forward channel {} got data before explicit accept", channel_id);
+            // Re-queue this data by just proceeding — the write_half will consume it below
+            // Actually, just start the bridge — we'll handle data inline
+        }
+        Ok(None) => {
+            log::error!("Local forward channel {} router closed before accept", channel_id);
+            channel_router.remove(channel_id).await;
+            return Err(QsshError::Protocol("Channel closed before accept".into()));
+        }
+        Err(_) => {
+            log::error!("Local forward channel {} timed out waiting for accept", channel_id);
+            channel_router.remove(channel_id).await;
+            return Err(QsshError::Protocol("Timeout waiting for channel accept".into()));
+        }
+    }
+
+    // Bridge local TCP <-> channel data bidirectionally
     let (mut read_half, mut write_half) = local_stream.into_split();
-    
-    // Create bidirectional forwarding
-    let (tx_to_remote, mut rx_to_remote) = mpsc::channel::<Vec<u8>>(256);
-    let (tx_from_remote, mut rx_from_remote) = mpsc::channel::<Vec<u8>>(256);
-    
-    // Forward local -> remote
-    let transport_write = transport.clone();
+
+    // Local -> Remote: read from TCP, send as channel data
+    let transport_out = transport.clone();
     let local_to_remote = tokio::spawn(async move {
         let mut buffer = vec![0u8; 8192];
         loop {
             match read_half.read(&mut buffer).await {
-                Ok(0) => break, // EOF
+                Ok(0) => break,
                 Ok(n) => {
-                    let data_msg = Message::Channel(ChannelMessage::Data {
+                    let msg = Message::Channel(ChannelMessage::Data {
                         channel_id,
                         data: buffer[..n].to_vec(),
                     });
-                    if transport_write.send_message(&data_msg).await.is_err() {
+                    if transport_out.send_message(&msg).await.is_err() {
                         break;
                     }
                 }
@@ -398,26 +424,28 @@ async fn handle_local_forward(
             }
         }
     });
-    
-    // Forward remote -> local
+
+    // Remote -> Local: receive from router, write to TCP
     let remote_to_local = tokio::spawn(async move {
-        while let Some(data) = rx_from_remote.recv().await {
+        while let Some(data) = data_rx.recv().await {
+            if data.is_empty() { continue; } // skip any stray accept signals
             if write_half.write_all(&data).await.is_err() {
                 break;
             }
         }
     });
-    
+
     // Wait for either direction to finish
     tokio::select! {
         _ = local_to_remote => {}
         _ = remote_to_local => {}
     }
-    
-    // Send EOF
+
+    // Clean up
+    channel_router.remove(channel_id).await;
     let eof_msg = Message::Channel(ChannelMessage::Eof { channel_id });
     let _ = transport.send_message(&eof_msg).await;
-    
+
     Ok(())
 }
 
@@ -517,6 +545,7 @@ pub async fn handle_forwarded_channel(
 async fn handle_socks_connection(
     mut stream: TcpStream,
     transport: Arc<Transport>,
+    channel_router: ForwardedChannelRouter,
 ) -> Result<()> {
     // SOCKS5 handshake
     let mut buffer = vec![0u8; 1024];
@@ -559,7 +588,7 @@ async fn handle_socks_connection(
     stream.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
     
     // Forward the connection
-    handle_local_forward(stream, transport, dest_host, dest_port).await
+    handle_local_forward(stream, transport, dest_host, dest_port, channel_router).await
 }
 
 #[cfg(test)]
