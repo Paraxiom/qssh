@@ -14,7 +14,8 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy Cargo files first (for better caching)
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml ./
+COPY Cargo.lock* ./
 
 # Create dummy source to cache dependencies
 RUN mkdir -p src/bin && \
