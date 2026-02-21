@@ -17,14 +17,15 @@ WORKDIR /app
 COPY Cargo.toml ./
 COPY Cargo.lock* ./
 
-# Create dummy source to cache dependencies
-RUN mkdir -p src/bin && \
+# Create dummy sources to cache dependencies (must match all bins/examples Cargo discovers)
+RUN mkdir -p src/bin examples && \
     echo "fn main() {}" > src/main.rs && \
-    echo "fn main() {}" > src/bin/qssh.rs && \
-    echo "fn main() {}" > src/bin/qsshd.rs && \
-    echo "fn main() {}" > src/bin/qscp.rs && \
+    for bin in qssh qsshd qscp qssh-add qssh-agent qssh-keygen qssh-passwd qsshpass test_pqcrypto; do \
+      echo "fn main() {}" > src/bin/${bin}.rs; \
+    done && \
+    echo "fn main() {}" > examples/quantum_harmony_validator.rs && \
     cargo build --release --bin qssh --bin qsshd --bin qscp && \
-    rm -rf src
+    rm -rf src examples
 
 # Copy source code
 COPY src/ src/
