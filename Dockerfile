@@ -71,4 +71,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 USER qssh
 
 # Default command
-CMD ["/usr/local/bin/qsshd", "--config", "/etc/qssh/qsshd.conf"]
+CMD ["/usr/local/bin/qsshd", "--listen", "0.0.0.0:22222", "--quantum-native"]
