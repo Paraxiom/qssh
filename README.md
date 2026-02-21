@@ -14,7 +14,7 @@
 |-----------|--------|---------|
 | **NIST PQC Algorithms** | Implemented | Falcon-512/1024, SPHINCS+-SHA256, ML-KEM |
 | **Protocol Hardening** | Implemented | 768-byte uniform frames, no metadata leakage |
-| **Test Coverage** | 124 tests | Library + integration tests passing |
+| **Test Coverage** | 132 tests | Library + integration tests passing |
 | **Production Hardening** | Implemented | No panics in production paths, proper error handling |
 | **Formal Verification** | Complete | 3-tier: Kani (30) + Verus (20) + Lean 4 (67 theorems) |
 | **Formal Security Audit** | Not yet performed | Recommended before production deployment |
