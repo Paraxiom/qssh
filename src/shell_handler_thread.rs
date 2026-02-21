@@ -1,6 +1,7 @@
 //! Shell handler using blocking threads for PTY I/O
 
-use crate::{Result, QsshError, transport::{Transport, Message, ChannelMessage}};
+use crate::{Result, QsshError, transport::{Transport, Message, ChannelMessage, ChannelType}};
+use crate::port_forward::ForwardedChannelRouter;
 use crate::pty_thread::PtyThread;
 use tokio::process::{Command, Child};
 use tokio::sync::mpsc;
@@ -13,6 +14,22 @@ pub struct ShellSessionThread {
     transport: Transport,
     username: String,
     pty: PtyThread,
+    /// Router for dispatching messages to forwarded channels (remote -R)
+    channel_router: Option<ForwardedChannelRouter>,
+    /// Sender for new forwarded channel open requests (server notifies handler)
+    forwarded_channel_tx: Option<mpsc::Sender<ForwardedChannelOpen>>,
+}
+
+/// Represents an incoming ForwardedTcpip channel open from the remote forward listener
+#[derive(Debug)]
+pub struct ForwardedChannelOpen {
+    pub channel_id: u32,
+    pub connected_host: String,
+    pub connected_port: u16,
+    pub originator_host: String,
+    pub originator_port: u16,
+    pub window_size: u32,
+    pub max_packet_size: u32,
 }
 
 impl ShellSessionThread {
@@ -92,16 +109,28 @@ impl ShellSessionThread {
         
         // Don't spawn yet - save the command for run()
         // This ensures the shell starts AFTER the PTY threads are ready
-        
+
         Ok(Self {
             channel_id,
             process: cmd, // Store Command instead of Child
             transport,
             username,
             pty,
+            channel_router: None,
+            forwarded_channel_tx: None,
         })
     }
     
+    /// Set the channel router for dispatching forwarded channel data
+    pub fn set_channel_router(
+        &mut self,
+        router: ForwardedChannelRouter,
+        forwarded_tx: mpsc::Sender<ForwardedChannelOpen>,
+    ) {
+        self.channel_router = Some(router);
+        self.forwarded_channel_tx = Some(forwarded_tx);
+    }
+
     pub async fn run(mut self) -> Result<()> {
         log::info!("Starting shell session run() for channel {}", self.channel_id);
         let channel_id = self.channel_id;
@@ -168,7 +197,7 @@ impl ShellSessionThread {
                     log::info!("Shell handler received result from transport");
                     match result {
                         Ok(Message::Channel(ChannelMessage::Data { channel_id: ch, data })) if ch == channel_id => {
-                            log::info!("Shell handler received {} bytes from client for PTY: {:?}", 
+                            log::info!("Shell handler received {} bytes from client for PTY: {:?}",
                                 data.len(), String::from_utf8_lossy(&data));
                             if tx_to_pty.send(data.clone()).await.is_err() {
                                 log::error!("Failed to send data to PTY");
@@ -180,6 +209,32 @@ impl ShellSessionThread {
                         Ok(Message::Channel(ChannelMessage::Close { channel_id: ch })) if ch == channel_id => {
                             log::info!("Channel {} closed by client", ch);
                             break;
+                        }
+                        // Route data for forwarded channels (-R)
+                        Ok(Message::Channel(ChannelMessage::Data { channel_id: ch, data })) => {
+                            if let Some(ref router) = self.channel_router {
+                                if !router.route_data(ch, data).await {
+                                    log::warn!("No handler for forwarded channel {} data", ch);
+                                }
+                            }
+                        }
+                        // Handle Channel::Accept for forwarded channels
+                        Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch, .. })) if ch != channel_id => {
+                            if let Some(ref router) = self.channel_router {
+                                // Signal accept by sending an empty vec (handler checks for this)
+                                let _ = router.route_data(ch, Vec::new()).await;
+                            }
+                        }
+                        // Route close/eof for forwarded channels
+                        Ok(Message::Channel(ChannelMessage::Close { channel_id: ch })) => {
+                            if let Some(ref router) = self.channel_router {
+                                router.remove(ch).await;
+                            }
+                        }
+                        Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch })) if ch != channel_id => {
+                            if let Some(ref router) = self.channel_router {
+                                router.remove(ch).await;
+                            }
                         }
                         Ok(_) => {}
                         Err(e) => {

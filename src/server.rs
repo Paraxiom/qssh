@@ -7,12 +7,13 @@ use crate::{
         GlobalRequestMessage, GlobalRequestType, GlobalRequestSuccessMessage},
     handshake::ServerHandshake,
     shell_handler_thread::ShellSessionThread,
+    port_forward::ForwardedChannelRouter,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 
 /// QSSH server configuration
 #[derive(Clone)]
@@ -170,6 +171,8 @@ async fn handle_connection(
 
     // Remote forward state for this connection
     let remote_forward_state = Arc::new(Mutex::new(RemoteForwardState::new()));
+    // Channel router: shared between shell handler and remote forward connections
+    let channel_router = ForwardedChannelRouter::new();
 
     // Handle messages
     loop {
@@ -184,7 +187,8 @@ async fn handle_connection(
                     });
 
                 if let Err(e) = handle_client_message(
-                    msg, &transport, &username, &connections, &remote_forward_state,
+                    msg, &transport, &username, &connections,
+                    &remote_forward_state, &channel_router,
                 ).await {
                     // Check if this is the special shell completion signal
                     if let QsshError::Protocol(ref msg) = e {
@@ -228,13 +232,14 @@ async fn handle_client_message(
     username: &str,
     connections: &Arc<Mutex<HashMap<String, ClientConnection>>>,
     remote_forward_state: &Arc<Mutex<RemoteForwardState>>,
+    channel_router: &ForwardedChannelRouter,
 ) -> Result<()> {
     match msg {
         Message::Channel(channel_msg) => {
-            handle_channel_message(channel_msg, transport, username, connections).await?;
+            handle_channel_message(channel_msg, transport, username, connections, channel_router).await?;
         }
         Message::GlobalRequest(req) => {
-            handle_global_request(req, transport, username, remote_forward_state).await?;
+            handle_global_request(req, transport, username, remote_forward_state, channel_router).await?;
         }
         Message::Disconnect(d) => {
             log::info!("Client {} disconnecting: {}", username, d.description);
@@ -260,6 +265,7 @@ async fn handle_global_request(
     transport: &Transport,
     username: &str,
     remote_forward_state: &Arc<Mutex<RemoteForwardState>>,
+    channel_router: &ForwardedChannelRouter,
 ) -> Result<()> {
     match req.request_type {
         GlobalRequestType::TcpipForward { bind_host, bind_port } => {
@@ -292,10 +298,12 @@ async fn handle_global_request(
 
                     // Spawn the accept loop
                     let transport_clone = transport.clone();
+                    let router_clone = channel_router.clone();
                     let bind_host_clone = bind_host.clone();
                     let handle = tokio::spawn(async move {
                         handle_remote_forward_listener(
-                            listener, transport_clone, bind_host_clone, actual_port,
+                            listener, transport_clone, router_clone,
+                            bind_host_clone, actual_port,
                         ).await;
                     });
 
@@ -340,6 +348,7 @@ async fn handle_global_request(
 async fn handle_remote_forward_listener(
     listener: TcpListener,
     transport: Transport,
+    channel_router: ForwardedChannelRouter,
     bind_host: String,
     bind_port: u16,
 ) {
@@ -349,13 +358,14 @@ async fn handle_remote_forward_listener(
                 log::info!("Remote forward connection from {} on {}:{}", peer_addr, bind_host, bind_port);
 
                 let transport = transport.clone();
+                let router = channel_router.clone();
                 let bind_host = bind_host.clone();
                 let originator_host = peer_addr.ip().to_string();
                 let originator_port = peer_addr.port();
 
                 tokio::spawn(async move {
                     if let Err(e) = handle_remote_forward_connection(
-                        stream, transport, bind_host, bind_port,
+                        stream, transport, router, bind_host, bind_port,
                         originator_host, originator_port,
                     ).await {
                         log::error!("Remote forward connection error: {}", e);
@@ -371,10 +381,12 @@ async fn handle_remote_forward_listener(
 }
 
 /// Handle a single connection to a remote-forwarded port.
-/// Opens a ForwardedTcpip channel to the client, waits for Accept, then bridges data.
+/// Opens a ForwardedTcpip channel to the client, registers with the channel router
+/// to receive data, then bridges TCP stream <-> channel data bidirectionally.
 async fn handle_remote_forward_connection(
     tcp_stream: TcpStream,
     transport: Transport,
+    channel_router: ForwardedChannelRouter,
     bind_host: String,
     bind_port: u16,
     originator_host: String,
@@ -382,6 +394,10 @@ async fn handle_remote_forward_connection(
 ) -> Result<()> {
     // Generate channel ID
     let channel_id = rand::random::<u32>() % 65536;
+
+    // Register with router BEFORE sending Open, so we can receive the Accept
+    let (data_tx, mut data_rx) = mpsc::channel::<Vec<u8>>(256);
+    channel_router.register(channel_id, data_tx).await;
 
     // Open a ForwardedTcpip channel to the client
     let open_msg = Message::Channel(ChannelMessage::Open {
@@ -398,30 +414,32 @@ async fn handle_remote_forward_connection(
 
     transport.send_message(&open_msg).await?;
 
-    // Wait for Accept from client
-    let start = std::time::Instant::now();
-    loop {
-        if start.elapsed() > std::time::Duration::from_secs(10) {
-            return Err(QsshError::Protocol("Timeout waiting for channel accept from client".into()));
-        }
+    // Wait for Accept from client (arrives as empty vec via router)
+    let accept_timeout = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        data_rx.recv(),
+    ).await;
 
-        match transport.receive_message::<Message>().await {
-            Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch_id, .. })) if ch_id == channel_id => {
-                log::debug!("Client accepted forwarded channel {}", channel_id);
-                break;
-            }
-            Ok(_) => {
-                // Ignore other messages while waiting for accept
-            }
-            Err(e) => return Err(e),
+    match accept_timeout {
+        Ok(Some(data)) if data.is_empty() => {
+            log::debug!("Client accepted forwarded channel {}", channel_id);
+        }
+        Ok(Some(_)) => {
+            // Got data before accept — unexpected but continue
+            log::warn!("Got data before accept on channel {}", channel_id);
+        }
+        _ => {
+            channel_router.remove(channel_id).await;
+            return Err(QsshError::Protocol("Timeout waiting for channel accept from client".into()));
         }
     }
 
     // Bridge: TCP stream <-> channel data (bidirectional)
     let (mut tcp_read, mut tcp_write) = tcp_stream.into_split();
 
-    // TCP -> channel
+    // TCP -> channel (read from local TCP, send via transport to client)
     let transport_send = transport.clone();
+    let router_clone = channel_router.clone();
     let tcp_to_channel = tokio::spawn(async move {
         let mut buffer = vec![0u8; 8192];
         loop {
@@ -439,27 +457,17 @@ async fn handle_remote_forward_connection(
                 Err(_) => break,
             }
         }
+        router_clone.remove(channel_id).await;
     });
 
-    // Channel -> TCP (read channel data from transport, write to TCP)
+    // Channel -> TCP (receive from router, write to local TCP)
     let channel_to_tcp = tokio::spawn(async move {
-        loop {
-            match transport.receive_message::<Message>().await {
-                Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data })) if ch_id == channel_id => {
-                    if tcp_write.write_all(&data).await.is_err() {
-                        break;
-                    }
-                }
-                Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id })) if ch_id == channel_id => {
-                    log::debug!("Channel {} EOF from client", channel_id);
-                    break;
-                }
-                Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) if ch_id == channel_id => {
-                    log::debug!("Channel {} closed by client", channel_id);
-                    break;
-                }
-                Ok(_) => {}
-                Err(_) => break,
+        while let Some(data) = data_rx.recv().await {
+            if data.is_empty() {
+                continue; // control signal
+            }
+            if tcp_write.write_all(&data).await.is_err() {
+                break;
             }
         }
     });
@@ -470,6 +478,7 @@ async fn handle_remote_forward_connection(
         _ = channel_to_tcp => {}
     }
 
+    channel_router.remove(channel_id).await;
     Ok(())
 }
 
@@ -479,6 +488,7 @@ async fn handle_channel_message(
     transport: &Transport,
     username: &str,
     connections: &Arc<Mutex<HashMap<String, ClientConnection>>>,
+    channel_router: &ForwardedChannelRouter,
 ) -> Result<()> {
     match msg {
         ChannelMessage::Open { channel_id, channel_type, window_size, max_packet_size } => {
@@ -548,10 +558,15 @@ async fn handle_channel_message(
                 width,
                 height,
             ).await {
-                Ok(session) => {
+                Ok(mut session) => {
                     log::info!("Starting shell session for user {} on channel {}", username, channel_id);
                     log::info!("Shell handler taking over transport - running inline");
-                    
+
+                    // Give the shell handler the channel router so it can dispatch
+                    // forwarded channel messages (for -R remote port forwarding)
+                    let (_fwd_tx, _fwd_rx) = mpsc::channel(16);
+                    session.set_channel_router(channel_router.clone(), _fwd_tx);
+
                     // Run the shell handler inline - this blocks until shell exits
                     // This ensures the main loop doesn't try to read from transport
                     if let Err(e) = session.run().await {
