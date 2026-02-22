@@ -1,6 +1,6 @@
 [package]
 name = "qssh"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 authors = ["Paraxiom"]
 license = "MIT OR Apache-2.0"
@@ -38,6 +38,7 @@ sha2 = "0.10"
 hkdf = "0.12"
 hmac = "0.12"
 zeroize = { version = "1.6", features = ["zeroize_derive"] }
+argon2 = "0.5"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -109,6 +110,14 @@ path = "src/bin/qssh-passwd.rs"
 [[bin]]
 name = "qssh-agent"
 path = "src/bin/qssh-agent.rs"
+
+[[bin]]
+name = "qssh-sign"
+path = "src/bin/qssh-sign.rs"
+
+[[bin]]
+name = "qssh-node"
+path = "src/bin/qssh-node.rs"
 
 [[bin]]
 name = "qssh-add"

@@ -248,6 +248,11 @@ impl ConfigParser {
         Ok(parser)
     }
 
+    /// List all configured host names
+    pub fn list_hosts(&self) -> Vec<String> {
+        self.hosts.keys().cloned().collect()
+    }
+
     /// Get configuration for a specific host
     pub fn get_host_config(&self, hostname: &str) -> HostConfig {
         // Check for exact match
