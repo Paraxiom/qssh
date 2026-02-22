@@ -320,6 +320,61 @@ impl SftpMessage {
                 let path = read_string(&mut cursor)?;
                 Ok(SftpMessage::RealPath(RealPathMessage { id, path }))
             }
+            // Server -> Client messages
+            SSH_FXP_VERSION => {
+                let version = cursor.read_u32::<BigEndian>()?;
+                // Extensions parsing skipped for now
+                Ok(SftpMessage::Version { version, extensions: vec![] })
+            }
+            SSH_FXP_STATUS => {
+                let id = cursor.read_u32::<BigEndian>()?;
+                let code_val = cursor.read_u32::<BigEndian>()?;
+                let code = match code_val {
+                    0 => StatusCode::Ok,
+                    1 => StatusCode::Eof,
+                    2 => StatusCode::NoSuchFile,
+                    3 => StatusCode::PermissionDenied,
+                    4 => StatusCode::Failure,
+                    5 => StatusCode::BadMessage,
+                    6 => StatusCode::NoConnection,
+                    7 => StatusCode::ConnectionLost,
+                    8 => StatusCode::OpUnsupported,
+                    _ => StatusCode::Failure,
+                };
+                let message = read_string(&mut cursor).unwrap_or_default();
+                let language = read_string(&mut cursor).unwrap_or_default();
+                Ok(SftpMessage::Status { id, code, message, language })
+            }
+            SSH_FXP_HANDLE => {
+                let id = cursor.read_u32::<BigEndian>()?;
+                let handle = read_string(&mut cursor)?;
+                Ok(SftpMessage::Handle { id, handle })
+            }
+            SSH_FXP_DATA => {
+                let id = cursor.read_u32::<BigEndian>()?;
+                let data = read_data(&mut cursor)?;
+                Ok(SftpMessage::Data { id, data })
+            }
+            SSH_FXP_NAME => {
+                let id = cursor.read_u32::<BigEndian>()?;
+                let count = cursor.read_u32::<BigEndian>()? as usize;
+                let mut files = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let filename = read_string(&mut cursor)?;
+                    let longname = read_string(&mut cursor)?;
+                    let attrs_data = &data[cursor.position() as usize..];
+                    let (attrs, consumed) = FileAttributes::from_bytes(attrs_data)?;
+                    cursor.set_position(cursor.position() + consumed as u64);
+                    files.push(FileInfo { filename, longname, attrs });
+                }
+                Ok(SftpMessage::Name { id, files })
+            }
+            SSH_FXP_ATTRS => {
+                let id = cursor.read_u32::<BigEndian>()?;
+                let attrs_data = &data[cursor.position() as usize..];
+                let (attrs, _) = FileAttributes::from_bytes(attrs_data)?;
+                Ok(SftpMessage::Attrs { id, attrs })
+            }
             _ => Err(format!("Unknown message type: {}", msg_type).into()),
         }
     }
@@ -489,5 +544,279 @@ mod kani_proofs {
 
         assert_eq!(str_cast as usize, str_len);
         assert_eq!(data_cast as usize, data_len);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Round-trip: Init → bytes → Init
+    #[test]
+    fn test_roundtrip_init() {
+        let msg = SftpMessage::Init { version: 3 };
+        let bytes = msg.to_bytes().unwrap();
+        let parsed = SftpMessage::from_bytes(&bytes).unwrap();
+        match parsed {
+            SftpMessage::Init { version } => assert_eq!(version, 3),
+            other => panic!("Expected Init, got {:?}", other),
+        }
+    }
+
+    /// Round-trip: Version → bytes → Version
+    #[test]
+    fn test_roundtrip_version() {
+        let msg = SftpMessage::Version { version: 3, extensions: vec![] };
+        let bytes = msg.to_bytes().unwrap();
+        let parsed = SftpMessage::from_bytes(&bytes).unwrap();
+        match parsed {
+            SftpMessage::Version { version, .. } => assert_eq!(version, 3),
+            other => panic!("Expected Version, got {:?}", other),
+        }
+    }
+
+    /// Round-trip: Status → bytes → Status (all codes)
+    #[test]
+    fn test_roundtrip_status_codes() {
+        let codes = [
+            (StatusCode::Ok, 0u32),
+            (StatusCode::Eof, 1),
+            (StatusCode::NoSuchFile, 2),
+            (StatusCode::PermissionDenied, 3),
+            (StatusCode::Failure, 4),
+            (StatusCode::OpUnsupported, 8),
+        ];
+        for (code, expected_val) in codes {
+            let msg = SftpMessage::Status {
+                id: 42,
+                code,
+                message: "test".to_string(),
+                language: "en".to_string(),
+            };
+            let bytes = msg.to_bytes().unwrap();
+            let parsed = SftpMessage::from_bytes(&bytes).unwrap();
+            match parsed {
+                SftpMessage::Status { id, code: parsed_code, message, .. } => {
+                    assert_eq!(id, 42);
+                    assert_eq!(parsed_code as u32, expected_val);
+                    assert_eq!(message, "test");
+                }
+                other => panic!("Expected Status, got {:?}", other),
+            }
+        }
+    }
+
+    /// Round-trip: Handle → bytes → Handle
+    #[test]
+    fn test_roundtrip_handle() {
+        let msg = SftpMessage::Handle { id: 7, handle: "handle_1".to_string() };
+        let bytes = msg.to_bytes().unwrap();
+        let parsed = SftpMessage::from_bytes(&bytes).unwrap();
+        match parsed {
+            SftpMessage::Handle { id, handle } => {
+                assert_eq!(id, 7);
+                assert_eq!(handle, "handle_1");
+            }
+            other => panic!("Expected Handle, got {:?}", other),
+        }
+    }
+
+    /// Round-trip: Data → bytes → Data
+    #[test]
+    fn test_roundtrip_data() {
+        let payload = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03];
+        let msg = SftpMessage::Data { id: 99, data: payload.clone() };
+        let bytes = msg.to_bytes().unwrap();
+        let parsed = SftpMessage::from_bytes(&bytes).unwrap();
+        match parsed {
+            SftpMessage::Data { id, data } => {
+                assert_eq!(id, 99);
+                assert_eq!(data, payload);
+            }
+            other => panic!("Expected Data, got {:?}", other),
+        }
+    }
+
+    /// Round-trip: Open (write+create+truncate) → bytes → Open
+    #[test]
+    fn test_roundtrip_open() {
+        let msg = SftpMessage::Open(OpenMessage {
+            id: 1,
+            filename: "/tmp/test.txt".to_string(),
+            flags: OpenFlags {
+                read: false, write: true, append: false,
+                create: true, truncate: true, exclusive: false,
+            },
+            attrs: FileAttributes::default(),
+        });
+        let bytes = msg.to_bytes().unwrap();
+        let parsed = SftpMessage::from_bytes(&bytes).unwrap();
+        match parsed {
+            SftpMessage::Open(m) => {
+                assert_eq!(m.id, 1);
+                assert_eq!(m.filename, "/tmp/test.txt");
+                assert!(m.flags.write);
+                assert!(m.flags.create);
+                assert!(m.flags.truncate);
+                assert!(!m.flags.read);
+            }
+            other => panic!("Expected Open, got {:?}", other),
+        }
+    }
+
+    /// Round-trip: Close → bytes → Close
+    #[test]
+    fn test_roundtrip_close() {
+        let msg = SftpMessage::Close { id: 5, handle: "h42".to_string() };
+        let bytes = msg.to_bytes().unwrap();
+        let parsed = SftpMessage::from_bytes(&bytes).unwrap();
+        match parsed {
+            SftpMessage::Close { id, handle } => {
+                assert_eq!(id, 5);
+                assert_eq!(handle, "h42");
+            }
+            other => panic!("Expected Close, got {:?}", other),
+        }
+    }
+
+    /// Round-trip: Read → bytes → Read
+    #[test]
+    fn test_roundtrip_read() {
+        let msg = SftpMessage::Read(ReadMessage {
+            id: 10, handle: "h1".to_string(), offset: 4096, length: 32768,
+        });
+        let bytes = msg.to_bytes().unwrap();
+        let parsed = SftpMessage::from_bytes(&bytes).unwrap();
+        match parsed {
+            SftpMessage::Read(m) => {
+                assert_eq!(m.id, 10);
+                assert_eq!(m.handle, "h1");
+                assert_eq!(m.offset, 4096);
+                assert_eq!(m.length, 32768);
+            }
+            other => panic!("Expected Read, got {:?}", other),
+        }
+    }
+
+    /// Round-trip: Write → bytes → Write
+    #[test]
+    fn test_roundtrip_write() {
+        let payload = vec![0x41; 1024]; // 1KB of 'A'
+        let msg = SftpMessage::Write(WriteMessage {
+            id: 20, handle: "h2".to_string(), offset: 0, data: payload.clone(),
+        });
+        let bytes = msg.to_bytes().unwrap();
+        let parsed = SftpMessage::from_bytes(&bytes).unwrap();
+        match parsed {
+            SftpMessage::Write(m) => {
+                assert_eq!(m.id, 20);
+                assert_eq!(m.handle, "h2");
+                assert_eq!(m.offset, 0);
+                assert_eq!(m.data, payload);
+            }
+            other => panic!("Expected Write, got {:?}", other),
+        }
+    }
+
+    /// Round-trip: Stat → bytes → Stat
+    #[test]
+    fn test_roundtrip_stat() {
+        let msg = SftpMessage::Stat(StatMessage { id: 30, path: "/etc/passwd".to_string() });
+        let bytes = msg.to_bytes().unwrap();
+        let parsed = SftpMessage::from_bytes(&bytes).unwrap();
+        match parsed {
+            SftpMessage::Stat(m) => {
+                assert_eq!(m.id, 30);
+                assert_eq!(m.path, "/etc/passwd");
+            }
+            other => panic!("Expected Stat, got {:?}", other),
+        }
+    }
+
+    /// Round-trip: Attrs → bytes → Attrs (with size + permissions)
+    #[test]
+    fn test_roundtrip_attrs() {
+        let msg = SftpMessage::Attrs {
+            id: 31,
+            attrs: FileAttributes {
+                size: Some(12345),
+                uid: None,
+                gid: None,
+                permissions: Some(0o644),
+                atime: None,
+                mtime: None,
+            },
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let parsed = SftpMessage::from_bytes(&bytes).unwrap();
+        match parsed {
+            SftpMessage::Attrs { id, attrs } => {
+                assert_eq!(id, 31);
+                assert_eq!(attrs.size, Some(12345));
+                assert_eq!(attrs.permissions, Some(0o644));
+                assert!(attrs.uid.is_none());
+            }
+            other => panic!("Expected Attrs, got {:?}", other),
+        }
+    }
+
+    /// Round-trip: Name (single file) → bytes → Name
+    #[test]
+    fn test_roundtrip_name() {
+        let msg = SftpMessage::Name {
+            id: 40,
+            files: vec![FileInfo {
+                filename: "hello.txt".to_string(),
+                longname: "-rw-r--r-- 1 user user 42 Feb 22 hello.txt".to_string(),
+                attrs: FileAttributes { size: Some(42), ..FileAttributes::default() },
+            }],
+        };
+        let bytes = msg.to_bytes().unwrap();
+        let parsed = SftpMessage::from_bytes(&bytes).unwrap();
+        match parsed {
+            SftpMessage::Name { id, files } => {
+                assert_eq!(id, 40);
+                assert_eq!(files.len(), 1);
+                assert_eq!(files[0].filename, "hello.txt");
+                assert_eq!(files[0].attrs.size, Some(42));
+            }
+            other => panic!("Expected Name, got {:?}", other),
+        }
+    }
+
+    /// Verify FileAttributes round-trip with all fields set
+    #[test]
+    fn test_file_attributes_full_roundtrip() {
+        let attrs = FileAttributes {
+            size: Some(999999),
+            uid: Some(1000),
+            gid: Some(1000),
+            permissions: Some(0o755),
+            atime: Some(1708560000),
+            mtime: Some(1708560000),
+        };
+        let bytes = attrs.to_bytes();
+        let (parsed, consumed) = FileAttributes::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.size, Some(999999));
+        assert_eq!(parsed.uid, Some(1000));
+        assert_eq!(parsed.gid, Some(1000));
+        assert_eq!(parsed.permissions, Some(0o755));
+        assert_eq!(parsed.atime, Some(1708560000));
+        assert_eq!(consumed, bytes.len());
+    }
+
+    /// Verify empty message is rejected
+    #[test]
+    fn test_reject_too_short() {
+        assert!(SftpMessage::from_bytes(&[0, 0]).is_err());
+    }
+
+    /// Verify unknown message type is rejected
+    #[test]
+    fn test_reject_unknown_type() {
+        let mut buf = Vec::new();
+        buf.write_u32::<BigEndian>(1).unwrap(); // length = 1
+        buf.push(255); // unknown type
+        assert!(SftpMessage::from_bytes(&buf).is_err());
     }
 }
