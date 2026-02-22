@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use tokio::fs;
 use base64::Engine;
 use serde::Deserialize;
+use std::io::Write;
 
 /// QKD configuration loaded from file
 #[derive(Debug, Deserialize)]
@@ -66,6 +67,10 @@ struct Args {
     #[clap(short, long)]
     daemon: bool,
 
+    /// PID file path (used with --daemon)
+    #[clap(long, default_value = "/var/run/qsshd.pid")]
+    pid_file: PathBuf,
+
     /// Use quantum-native transport (768-byte indistinguishable frames)
     #[clap(long)]
     quantum_native: bool,
@@ -75,17 +80,91 @@ struct Args {
     classical: bool,
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let args = Args::parse();
-    
+
+    // Daemonize BEFORE starting the tokio runtime (fork is not thread-safe)
+    if args.daemon {
+        daemonize(&args.pid_file);
+    }
+
+    // Build and enter the tokio runtime after daemonization
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    rt.block_on(async_main(args));
+}
+
+/// Unix double-fork daemonization.
+///
+/// 1. First fork  — parent exits, child continues
+/// 2. setsid()    — new session, detach from controlling terminal
+/// 3. Second fork — prevents reacquiring a terminal
+/// 4. Redirect stdin/stdout/stderr to /dev/null
+/// 5. Write PID file
+fn daemonize(pid_file: &PathBuf) {
+    use libc::{fork, setsid, _exit, STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO};
+    use std::fs::{File, OpenOptions};
+    use std::os::unix::io::AsRawFd;
+
+    // First fork
+    let pid = unsafe { fork() };
+    if pid < 0 {
+        eprintln!("qsshd: first fork failed");
+        process::exit(1);
+    }
+    if pid > 0 {
+        // Parent exits
+        unsafe { _exit(0) };
+    }
+
+    // Child: create new session
+    if unsafe { setsid() } < 0 {
+        eprintln!("qsshd: setsid failed");
+        process::exit(1);
+    }
+
+    // Second fork (prevent reacquiring terminal)
+    let pid = unsafe { fork() };
+    if pid < 0 {
+        eprintln!("qsshd: second fork failed");
+        process::exit(1);
+    }
+    if pid > 0 {
+        unsafe { _exit(0) };
+    }
+
+    // Redirect stdio to /dev/null
+    if let Ok(devnull) = File::open("/dev/null") {
+        let fd = devnull.as_raw_fd();
+        unsafe {
+            libc::dup2(fd, STDIN_FILENO);
+            libc::dup2(fd, STDOUT_FILENO);
+            libc::dup2(fd, STDERR_FILENO);
+        }
+    }
+
+    // Write PID file
+    if let Some(parent) = pid_file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match OpenOptions::new().write(true).create(true).truncate(true).open(pid_file) {
+        Ok(mut f) => {
+            let _ = writeln!(f, "{}", process::id());
+        }
+        Err(e) => {
+            // Can't eprintln (stdio is /dev/null), just continue
+            log::warn!("Failed to write PID file {:?}: {}", pid_file, e);
+        }
+    }
+}
+
+async fn async_main(args: Args) {
     // Initialize logging
     if args.verbose {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
     } else {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     }
-    
+
     // Generate keys mode
     if args.generate_keys {
         if let Err(e) = generate_host_keys(&args.host_key).await {
@@ -95,7 +174,7 @@ async fn main() {
         println!("Host keys generated successfully at: {:?}", args.host_key);
         return;
     }
-    
+
     // Create server configuration
     let mut config = match QsshServerConfig::new(&args.listen) {
         Ok(config) => config,
@@ -104,7 +183,7 @@ async fn main() {
             process::exit(1);
         }
     };
-    
+
     config.max_connections = args.max_connections;
 
     // Determine transport type
@@ -116,7 +195,7 @@ async fn main() {
         true  // Default to quantum-native
     };
     config.quantum_native = quantum_native;
-    
+
     // Load authorized keys
     if args.authorized_keys.exists() {
         match load_authorized_keys(&args.authorized_keys).await {
@@ -134,10 +213,10 @@ async fn main() {
     } else {
         log::warn!("No authorized_keys file found at {:?}", args.authorized_keys);
     }
-    
+
     // Load host key (in production, would deserialize from file)
     // For now, generate new key each time
-    
+
     if args.qkd {
         log::info!("QKD support enabled");
         config.qkd_enabled = true;
@@ -169,17 +248,14 @@ async fn main() {
             process::exit(1);
         }
     }
-    
-    // Daemonize if requested
+
     if args.daemon {
-        log::info!("Daemonizing...");
-        // In production, use proper daemonization
-        // For now, just note it
+        log::info!("Running as daemon (PID {})", process::id());
     }
-    
+
     // Create and start server
     let server = QsshServer::new(config);
-    
+
     log::info!("Starting QSSH server on {}", args.listen);
     log::info!("Post-quantum algorithms: SPHINCS+, Falcon");
     if quantum_native {
@@ -192,7 +268,7 @@ async fn main() {
     } else {
         log::info!("QKD: Disabled");
     }
-    
+
     // Start server
     match server.start().await {
         Ok(()) => {
@@ -202,6 +278,11 @@ async fn main() {
             eprintln!("Server error: {}", e);
             process::exit(1);
         }
+    }
+
+    // Clean up PID file on normal exit
+    if args.daemon {
+        let _ = std::fs::remove_file(&args.pid_file);
     }
 }
 

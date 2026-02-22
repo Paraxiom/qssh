@@ -58,6 +58,7 @@ pub struct QsshClient {
     x11_forwarder: Option<X11Forwarder>,
     remote_forward_registry: RemoteForwardRegistry,
     forwarded_channel_router: ForwardedChannelRouter,
+    rekey_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl QsshClient {
@@ -71,6 +72,7 @@ impl QsshClient {
             x11_forwarder: None,
             remote_forward_registry: RemoteForwardRegistry::new(),
             forwarded_channel_router: ForwardedChannelRouter::new(),
+            rekey_task: None,
         }
     }
 
@@ -181,16 +183,35 @@ impl QsshClient {
         log::info!("Handshake completed successfully");
         
         self.transport = Some(transport);
-        
+
         // Don't start background transport handler - it conflicts with shell mode
         // The shell session will handle its own transport messages
         // self.start_transport_handler();
-        
+
         // Set up port forwards
         for forward in &self.config.port_forwards {
             self.setup_port_forward(forward.clone()).await?;
         }
-        
+
+        // Start automatic rekey timer if key_rotation_interval > 0
+        let interval_secs = self.config.key_rotation_interval;
+        if interval_secs > 0 {
+            if let Some(transport) = self.transport.clone() {
+                let interval = Duration::from_secs(interval_secs);
+                log::info!("Automatic rekey scheduled every {}s", interval_secs);
+                let handle = tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(interval).await;
+                        log::info!("Rekey timer fired — initiating key rotation");
+                        if let Err(e) = rekey_with_transport(&transport).await {
+                            log::warn!("Automatic rekey failed: {} (will retry next interval)", e);
+                        }
+                    }
+                });
+                self.rekey_task = Some(handle);
+            }
+        }
+
         Ok(())
     }
 
@@ -475,16 +496,21 @@ impl QsshClient {
     
     /// Close the connection
     pub async fn disconnect(&mut self) -> Result<()> {
+        // Cancel rekey timer
+        if let Some(task) = self.rekey_task.take() {
+            task.abort();
+        }
+
         if let Some(transport) = &self.transport {
             let disconnect_msg = Message::Disconnect(crate::transport::DisconnectMessage {
                 reason_code: crate::transport::protocol::disconnect_reasons::BY_APPLICATION,
                 description: "Client disconnecting".into(),
             });
-            
+
             transport.send_message(&disconnect_msg).await?;
             transport.close().await?;
         }
-        
+
         self.transport = None;
         Ok(())
     }
@@ -837,6 +863,67 @@ async fn handle_message(msg: Message, channel_manager: &ChannelManager) -> Resul
             log::debug!("Unhandled message type");
         }
     }
+    Ok(())
+}
+
+/// Perform rekey on a transport (standalone, for use from spawned timer task).
+/// Same logic as QsshClient::rekey() but takes transport directly.
+async fn rekey_with_transport(transport: &Transport) -> Result<()> {
+    use sha3::Sha3_256;
+    use hkdf::Hkdf;
+
+    log::info!("Initiating rekey (rekey #{})", transport.rekey_count() + 1);
+
+    let client_kex = PqKeyExchange::new()?;
+    let (client_share, client_sig) = client_kex.create_key_share()?;
+
+    let rekey_msg = RekeyMessage {
+        new_falcon_public_key: client_kex.falcon_pk.as_bytes().to_vec(),
+        new_key_share: client_share.clone(),
+        new_key_share_signature: client_sig,
+        request_qkd: false,
+    };
+    transport.send_message(&Message::Rekey(rekey_msg)).await?;
+
+    // Wait for server's rekey response (with timeout)
+    let server_rekey = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match transport.receive_message::<Message>().await {
+                Ok(Message::Rekey(rekey)) => return Ok(rekey),
+                Ok(_) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    }).await
+        .map_err(|_| QsshError::Protocol("Rekey response timed out".into()))??;
+
+    let verified = client_kex.verify_falcon(
+        &server_rekey.new_key_share,
+        &server_rekey.new_key_share_signature,
+        &server_rekey.new_falcon_public_key,
+    )?;
+
+    if !verified {
+        return Err(QsshError::Crypto("Server rekey signature verification failed".into()));
+    }
+
+    let mut ikm = Vec::new();
+    ikm.extend_from_slice(&client_share);
+    ikm.extend_from_slice(&server_rekey.new_key_share);
+
+    let hk = Hkdf::<Sha3_256>::new(None, &ikm);
+    let mut server_write_key = vec![0u8; 32];
+    let mut client_write_key = vec![0u8; 32];
+    hk.expand(b"qssh-rekey-server-write", &mut server_write_key)
+        .map_err(|_| QsshError::Crypto("HKDF expand failed".into()))?;
+    hk.expand(b"qssh-rekey-client-write", &mut client_write_key)
+        .map_err(|_| QsshError::Crypto("HKDF expand failed".into()))?;
+
+    let new_send = SymmetricCrypto::from_shared_secret(&client_write_key)?;
+    let new_recv = SymmetricCrypto::from_shared_secret(&server_write_key)?;
+    transport.update_keys(new_send, new_recv).await?;
+
+    log::info!("Automatic rekey complete — new session keys active");
     Ok(())
 }
 
