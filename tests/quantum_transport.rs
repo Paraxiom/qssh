@@ -28,7 +28,7 @@ async fn test_quantum_transport_handshake() {
 
         // Server creates its KEM
         let server_kem = QuantumKem::new().unwrap();
-        let (server_pk, _) = server_kem.public_keys();
+        let (_server_pk, _) = server_kem.public_keys();
 
         // Simulate getting client's public key (in real scenario, exchanged during handshake)
         let client_pk = vec![0u8; 32]; // Dummy client key for test
@@ -48,7 +48,7 @@ async fn test_quantum_transport_handshake() {
 
         // Client creates its KEM
         let client_kem = QuantumKem::new().unwrap();
-        let (client_pk, _) = client_kem.public_keys();
+        let (_client_pk, _) = client_kem.public_keys();
 
         // Simulate getting server's public key
         let server_pk = vec![0u8; 32]; // Dummy server key for test
@@ -116,7 +116,7 @@ fn test_defense_against_quantum_attacks() {
     let kem1 = QuantumKem::new().unwrap();
     let kem2 = QuantumKem::new().unwrap();
 
-    let (pk1, _) = kem1.public_keys();
+    let (_pk1, _) = kem1.public_keys();
     let (pk2, _) = kem2.public_keys();
 
     // Multiple encapsulations should produce different results (no reuse)

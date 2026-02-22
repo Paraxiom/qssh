@@ -2,14 +2,8 @@
 //!
 //! These tests actually start server and client processes and test real communication
 
-use qssh::{QsshConfig, PqAlgorithm};
 use qssh::server::{QsshServer, QsshServerConfig};
-use qssh::client::QsshClient;
 use tokio::time::{timeout, Duration};
-use std::process::Stdio;
-use tokio::process::Command;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 /// Test 1: Basic quantum-native client-server handshake
 /// NOTE: Ignored due to pqcrypto segfault on macOS during server initialization

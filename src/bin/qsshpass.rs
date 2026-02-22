@@ -73,8 +73,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_security_warning() {
         // Ensure we always warn about security

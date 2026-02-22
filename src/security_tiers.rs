@@ -145,6 +145,7 @@ impl Default for SecurityTier {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

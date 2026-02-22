@@ -3,8 +3,8 @@
 //! NOTE: Several tests ignored due to pqcrypto segfault on macOS
 
 use qssh::crypto::quantum_kem::QuantumKem;
-use qssh::transport::quantum_resistant::{QuantumTransport, QuantumFrameType, QUANTUM_FRAME_SIZE};
-use tokio::net::{TcpListener, TcpStream};
+use qssh::transport::quantum_resistant::QUANTUM_FRAME_SIZE;
+use tokio::net::TcpListener;
 use std::time::{Duration, Instant};
 use std::collections::HashSet;
 
@@ -20,7 +20,7 @@ fn test_frame_indistinguishability_comprehensive() {
     let test_sizes = vec![0, 1, 10, 100, 500, 717]; // 717 is max payload
 
     for size in test_sizes {
-        let payload = vec![0u8; size];
+        let _payload = vec![0u8; size];
         // In a real frame, all would be exactly 768 bytes regardless of payload size
         println!("   ✓ Payload {} bytes → Frame {} bytes", size, QUANTUM_FRAME_SIZE);
     }
@@ -38,7 +38,7 @@ async fn test_quantum_kem_security_properties() {
     let bob = QuantumKem::new().unwrap();
 
     let (alice_pk, alice_falcon) = alice.public_keys();
-    let (bob_pk, bob_falcon) = bob.public_keys();
+    let (bob_pk, _bob_falcon) = bob.public_keys();
 
     // Test 1: Key sizes are correct for quantum security
     assert_eq!(alice_pk.len(), 32, "SPHINCS+ public key must be 32 bytes");
@@ -64,7 +64,7 @@ async fn test_traffic_analysis_resistance() {
 
     // Create mock transport setup
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let _addr = listener.local_addr().unwrap();
 
     // Simulate different message types and sizes
     let test_messages = vec![
@@ -302,7 +302,7 @@ fn test_quantum_native_summary() {
     assert_eq!(falcon_pk.len(), 897, "✓ Falcon present");
 
     // Test basic KEM operation
-    let (ciphertext, secret1) = kem.encapsulate(&sphincs_pk).unwrap();
+    let (_ciphertext, secret1) = kem.encapsulate(&sphincs_pk).unwrap();
     let (_, secret2) = kem.encapsulate(&sphincs_pk).unwrap();
     assert_ne!(secret1, secret2, "✓ No secret reuse");
 

@@ -13,7 +13,7 @@ fn test_quantum_kem_integration() {
 
     // Get public keys
     let (alice_sphincs, alice_falcon) = alice.public_keys();
-    let (bob_sphincs, bob_falcon) = bob.public_keys();
+    let (bob_sphincs, _bob_falcon) = bob.public_keys();
 
     // Test key sizes
     assert_eq!(alice_sphincs.len(), 32, "SPHINCS+ public key should be 32 bytes");

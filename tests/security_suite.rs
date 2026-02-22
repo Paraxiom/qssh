@@ -1,11 +1,10 @@
 // QSSH Security Test Suite
 // Comprehensive security testing including fuzzing, penetration, and attack simulation
 
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 use std::net::TcpStream;
 use std::io::{Write, Read};
-use tokio::time::timeout;
 use rand::{Rng, thread_rng};
 
 #[cfg(test)]

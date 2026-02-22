@@ -20,7 +20,7 @@ fn test_falcon_detached_signatures_basic() {
 
     // Get public keys
     let alice_falcon_pk = alice.public_bytes();
-    let bob_falcon_pk = bob.public_bytes();
+    let _bob_falcon_pk = bob.public_bytes();
 
     // Bob verifies Alice's detached signature
     let verified_share = bob.process_key_share(&alice_falcon_pk, &alice_share, &alice_signature)
