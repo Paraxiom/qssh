@@ -14,7 +14,7 @@
 |-----------|--------|---------|
 | **NIST PQC Algorithms** | Implemented | Falcon-512/1024, SPHINCS+-SHA256, ML-KEM |
 | **Protocol Hardening** | Implemented | 768-byte uniform frames, no metadata leakage |
-| **Test Coverage** | 132 tests | Library + integration tests passing |
+| **Test Coverage** | 156+ tests | Library + integration tests passing (0 warnings) |
 | **Production Hardening** | Implemented | No panics in production paths, proper error handling |
 | **Formal Verification** | Complete | 3-tier: Kani (30) + Verus (20) + Lean 4 (67 theorems) |
 | **Formal Security Audit** | Not yet performed | Recommended before production deployment |
@@ -93,27 +93,31 @@ qsshd --security-tier t2
 
 ## Feature Status
 
-**17/19 core SSH features implemented**
+**19/20 core SSH features implemented**
 
 ### Implemented
-- Interactive shell sessions with PTY support
+- Interactive shell sessions with PTY support + SIGWINCH resize
 - Command execution (`qssh user@host -c "command"`)
-- Post-quantum key exchange (Falcon-512, SPHINCS+)
+- Post-quantum key exchange (Falcon-512, SPHINCS+, ML-KEM)
 - SFTP file transfer
-- Port forwarding (-L local, -R remote, -D dynamic/SOCKS)
+- Port forwarding (-L local, -R remote, -D dynamic/SOCKS5)
 - Config file parsing (~/.qssh/config)
 - Public key and password authentication
 - SSH agent support (qssh-agent, qssh-add)
 - X11 forwarding (-X, -Y)
-- Connection multiplexing (ControlMaster/ControlPath)
-- ProxyJump multi-hop connections
+- Connection multiplexing (-S ControlMaster/ControlClient)
 - Known hosts management (TOFU)
 - Compression (zlib, zstd, lz4)
 - Session resumption
+- Auto-reconnect with exponential backoff (--persistent)
+- Automatic key rotation (configurable interval, Falcon rekey)
+- Server daemonization (--daemon, PID file, double-fork)
+- Host key persistence (SPHINCS+/Falcon serialization)
+- Signing service for node operators (qssh-sign, vault + Lamport OTS)
+- One-liner node connect (qssh-node, auto-binds standard ports)
 
-### In Development
-- Certificate-based authentication
-- GSSAPI/Kerberos authentication
+### Not Implemented
+- GSSAPI/Kerberos authentication (stub, feature-gated)
 
 ## Architecture
 
