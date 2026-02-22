@@ -749,4 +749,36 @@ mod tests {
         // Channel 300 doesn't exist
         assert!(!router.route_data(300, vec![3]).await);
     }
+
+    #[tokio::test]
+    async fn test_router_accept_signal() {
+        // Empty vec is used as the "channel accepted" signal
+        let router = ForwardedChannelRouter::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        router.register(42, tx).await;
+
+        // Send accept signal (empty vec)
+        assert!(router.route_data(42, Vec::new()).await);
+        let signal = rx.recv().await.unwrap();
+        assert!(signal.is_empty(), "Accept signal should be empty vec");
+
+        // Then send actual data
+        assert!(router.route_data(42, vec![0xDE, 0xAD]).await);
+        let data = rx.recv().await.unwrap();
+        assert_eq!(data, vec![0xDE, 0xAD]);
+    }
+
+    #[tokio::test]
+    async fn test_router_remove_drops_sender() {
+        let router = ForwardedChannelRouter::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        router.register(99, tx).await;
+
+        router.remove(99).await;
+
+        // After remove, routing should fail
+        assert!(!router.route_data(99, vec![1]).await);
+        // Receiver should get None (sender dropped)
+        assert!(rx.recv().await.is_none());
+    }
 }
