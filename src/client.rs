@@ -407,13 +407,14 @@ impl QsshClient {
         
         log::info!("Shell session started (channel {})", channel_id);
         
-        // Request PTY allocation from server
+        // Request PTY allocation from server with actual terminal dimensions
         let term = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string());
+        let (cols, rows) = terminal_size().unwrap_or((80, 24));
         let pty_req = Message::Channel(ChannelMessage::PtyRequest {
             channel_id,
             term: term.clone(),
-            width_chars: 80,
-            height_chars: 24,
+            width_chars: cols as u32,
+            height_chars: rows as u32,
             width_pixels: 0,
             height_pixels: 0,
             modes: vec![], // Terminal modes
@@ -554,6 +555,11 @@ impl QsshClient {
         
         // If not a TTY, use a different approach to avoid immediate EOF
         let result = if is_tty {
+            // Set up SIGWINCH handler for terminal resize
+            let mut sigwinch = tokio::signal::unix::signal(
+                tokio::signal::unix::SignalKind::window_change()
+            ).map_err(|e| QsshError::Io(e))?;
+
             // Interactive mode - read from stdin
             loop {
                 tokio::select! {
@@ -583,7 +589,7 @@ impl QsshClient {
                             }
                         }
                     }
-                    
+
                     // Receive data from server and write to stdout
                     Some(data) = rx.recv() => {
                         // Write data immediately to stdout
@@ -595,6 +601,21 @@ impl QsshClient {
                         if let Err(e) = stdout.flush().await {
                             log::error!("Stdout flush error: {}", e);
                             break Err(e.into());
+                        }
+                    }
+
+                    // Handle terminal resize (SIGWINCH)
+                    _ = sigwinch.recv() => {
+                        if let Some((cols, rows)) = terminal_size() {
+                            log::debug!("Terminal resized to {}x{}", cols, rows);
+                            let resize_msg = Message::Channel(ChannelMessage::WindowChange {
+                                channel_id,
+                                width_chars: cols as u32,
+                                height_chars: rows as u32,
+                                width_pixels: 0,
+                                height_pixels: 0,
+                            });
+                            let _ = transport_write.send_message(&resize_msg).await;
                         }
                     }
                 }
@@ -679,4 +700,16 @@ async fn handle_message(msg: Message, channel_manager: &ChannelManager) -> Resul
         }
     }
     Ok(())
+}
+
+/// Get terminal size (cols, rows) via ioctl
+fn terminal_size() -> Option<(u16, u16)> {
+    unsafe {
+        let mut ws: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(0, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
+            Some((ws.ws_col, ws.ws_row))
+        } else {
+            None
+        }
+    }
 }

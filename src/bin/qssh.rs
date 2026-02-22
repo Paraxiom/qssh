@@ -47,6 +47,10 @@ struct Args {
     /// Remote port forwarding (e.g., 9000:localhost:9000)
     #[clap(short = 'R', long)]
     remote: Vec<String>,
+
+    /// Dynamic port forwarding / SOCKS5 proxy (e.g., 1080)
+    #[clap(short = 'D', long)]
+    dynamic: Vec<String>,
     
     /// Post-quantum algorithm to use (sphincs, falcon512, falcon1024)
     #[clap(long, default_value = "sphincs")]
@@ -230,6 +234,18 @@ async fn main() {
         }
     }
 
+    // Parse dynamic forward specs (-D SOCKS5)
+    let mut dynamic_forwards = Vec::new();
+    for spec in &args.dynamic {
+        match PortForwardManager::parse_forward_spec(spec, "dynamic") {
+            Ok(fwd) => dynamic_forwards.push(fwd),
+            Err(e) => {
+                eprintln!("Error: Invalid dynamic forward spec '{}': {}", spec, e);
+                process::exit(1);
+            }
+        }
+    }
+
     let has_remote_forwards = !remote_forwards.is_empty();
 
     // Create client and connect
@@ -240,7 +256,7 @@ async fn main() {
             info!("Connected successfully!");
 
             // Set up port forwards (-L and -R) via PortForwardManager
-            let has_forwards = !local_forwards.is_empty() || !remote_forwards.is_empty();
+            let has_forwards = !local_forwards.is_empty() || !remote_forwards.is_empty() || !dynamic_forwards.is_empty();
             if has_forwards {
                 if let Some(transport) = client.transport() {
                     let transport = Arc::new(transport.clone());
@@ -249,6 +265,9 @@ async fn main() {
                         pfm.add_forward(fwd);
                     }
                     for fwd in remote_forwards {
+                        pfm.add_forward(fwd);
+                    }
+                    for fwd in dynamic_forwards {
                         pfm.add_forward(fwd);
                     }
                     match pfm.start_all().await {

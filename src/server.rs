@@ -117,6 +117,16 @@ struct ClientConnection {
 struct Channel {
     id: u32,
     channel_type: ChannelType,
+    /// PTY info stored from PtyRequest, used when ShellRequest arrives
+    pty: Option<PtyInfo>,
+}
+
+/// PTY settings received from PtyRequest
+#[derive(Clone)]
+struct PtyInfo {
+    term: String,
+    width: u16,
+    height: u16,
 }
 
 /// State for remote forwarding listeners on the server side.
@@ -578,6 +588,7 @@ async fn handle_channel_message(
                     conn.channels.insert(channel_id, Channel {
                         id: channel_id,
                         channel_type,
+                        pty: None,
                     });
                 }
                 return Ok(());
@@ -599,6 +610,7 @@ async fn handle_channel_message(
                 conn.channels.insert(channel_id, Channel {
                     id: channel_id,
                     channel_type,
+                    pty: None,
                 });
             }
         }
@@ -637,31 +649,51 @@ async fn handle_channel_message(
             }
         }
         ChannelMessage::PtyRequest { channel_id, term, width_chars, height_chars, .. } => {
-            log::info!("User {} requesting PTY on channel {} ({}x{} {})", 
+            log::info!("User {} requesting PTY on channel {} ({}x{} {})",
                 username, channel_id, width_chars, height_chars, term);
-            
-            // Store PTY settings for later use (when shell is requested)
-            // For now, just acknowledge with success
+
+            // Store PTY settings for use when ShellRequest arrives
+            {
+                let mut conns = connections.lock().await;
+                if let Some(conn) = conns.get_mut(username) {
+                    if let Some(ch) = conn.channels.get_mut(&channel_id) {
+                        ch.pty = Some(PtyInfo {
+                            term: term.clone(),
+                            width: width_chars as u16,
+                            height: height_chars as u16,
+                        });
+                    }
+                }
+            }
+
+            // Acknowledge with success
             let success = Message::Channel(ChannelMessage::Data {
                 channel_id,
                 data: vec![0], // Success indicator
             });
             transport.send_message(&success).await?;
-            
-            // Don't send any other data here - wait for shell request
         }
         ChannelMessage::ShellRequest { channel_id } => {
             log::info!("User {} requesting shell on channel {}", username, channel_id);
-            
-            // Get PTY dimensions from stored channel info (default if not set)
-            let (width, height) = (80u16, 24u16); // Default dimensions
-            
+
+            // Get PTY dimensions from stored channel info
+            let pty_info = {
+                let conns = connections.lock().await;
+                conns.get(username)
+                    .and_then(|conn| conn.channels.get(&channel_id))
+                    .and_then(|ch| ch.pty.clone())
+            };
+            let (term, width, height) = match pty_info {
+                Some(info) => (info.term, info.width, info.height),
+                None => ("xterm-256color".to_string(), 80, 24),
+            };
+
             // Spawn real shell session
             match ShellSessionThread::new(
                 channel_id,
                 transport.clone(),
                 username.to_string(),
-                Some("xterm-256color".to_string()),
+                Some(term),
                 width,
                 height,
             ).await {

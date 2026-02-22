@@ -39,6 +39,10 @@ impl PtyThread {
     pub fn slave_fd(&self) -> RawFd {
         self.slave_fd
     }
+
+    pub fn master_fd(&self) -> RawFd {
+        self.master_fd
+    }
     
     pub fn set_size(&self, rows: u16, cols: u16) -> Result<()> {
         let winsize = libc::winsize {

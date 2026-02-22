@@ -139,6 +139,7 @@ impl ShellSessionThread {
         
         // Start the PTY I/O threads FIRST
         log::debug!("Starting PTY threads");
+        let pty_master_fd = self.pty.master_fd();
         let (tx_to_pty, mut rx_from_pty, original_slave_fd) = self.pty.start_threads();
         
         // NOW spawn the shell process - after PTY threads are ready
@@ -223,6 +224,21 @@ impl ShellSessionThread {
                             if let Some(ref router) = self.channel_router {
                                 // Signal accept by sending an empty vec (handler checks for this)
                                 let _ = router.route_data(ch, Vec::new()).await;
+                            }
+                        }
+                        // Handle window resize
+                        Ok(Message::Channel(ChannelMessage::WindowChange { channel_id: ch, width_chars, height_chars, .. })) if ch == channel_id => {
+                            log::info!("Shell handler resizing PTY to {}x{}", width_chars, height_chars);
+                            let ws = libc::winsize {
+                                ws_row: height_chars as u16,
+                                ws_col: width_chars as u16,
+                                ws_xpixel: 0,
+                                ws_ypixel: 0,
+                            };
+                            unsafe {
+                                if libc::ioctl(pty_master_fd, libc::TIOCSWINSZ, &ws) != 0 {
+                                    log::warn!("Failed to resize PTY: {}", std::io::Error::last_os_error());
+                                }
                             }
                         }
                         // Route close/eof for forwarded channels
