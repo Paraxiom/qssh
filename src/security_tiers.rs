@@ -51,6 +51,7 @@ pub enum SecurityTier {
     HybridQuantum,
 }
 
+#[allow(deprecated)]
 impl SecurityTier {
     /// Get recommended tier based on available resources
     pub fn detect_available() -> Self {
@@ -123,6 +124,7 @@ impl SecurityTier {
     }
 }
 
+#[allow(deprecated)]
 impl fmt::Display for SecurityTier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

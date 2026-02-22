@@ -5,10 +5,8 @@
 use std::process::Stdio;
 use tokio::process::Command;
 use tokio::net::TcpStream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::{Result, QsshError, QsshConfig};
 use crate::client::QsshClient;
-use std::sync::Arc;
 
 /// Proxy configuration
 #[derive(Debug, Clone)]
@@ -199,7 +197,7 @@ impl JumpHost {
     /// Parse jump host specification (e.g., "user@host:port")
     pub fn parse(spec: &str) -> Result<Self> {
         let mut username = String::from(whoami::username());
-        let mut hostname = String::new();
+        let hostname;
         let mut port = 22;
 
         // Parse user@host:port format
@@ -230,8 +228,8 @@ impl JumpHost {
 
 /// Process-based stream for ProxyCommand
 struct ProcessStream {
-    stdin: tokio::process::ChildStdin,
-    stdout: tokio::process::ChildStdout,
+    _stdin: tokio::process::ChildStdin,
+    _stdout: tokio::process::ChildStdout,
     _child: tokio::process::Child,
 }
 
@@ -242,8 +240,8 @@ impl ProcessStream {
         child: tokio::process::Child,
     ) -> Self {
         Self {
-            stdin,
-            stdout,
+            _stdin: stdin,
+            _stdout: stdout,
             _child: child,
         }
     }

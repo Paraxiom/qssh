@@ -1,6 +1,6 @@
 //! Cipher selection module - choose between AES (quantum-resistant) and SHA3 (quantum-proof)
 
-use crate::{Result, QsshError};
+use crate::Result;
 use super::{SymmetricCrypto, QuantumCipher};
 
 /// Cipher algorithm choice

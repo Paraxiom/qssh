@@ -12,7 +12,7 @@ use crate::{
 use crate::crypto::hybrid::{HybridKeyPair, HybridClientExchange};
 #[cfg(feature = "qkd")]
 use crate::qkd::QkdClient;
-use pqcrypto_traits::sign::{PublicKey as SignPublicKeyTrait, SecretKey as SignSecretKeyTrait, SignedMessage as SignedMessageTrait};
+use pqcrypto_traits::sign::{PublicKey as SignPublicKeyTrait, SecretKey as SignSecretKeyTrait};
 use tokio::net::TcpStream;
 use rand::{thread_rng, RngCore};
 
@@ -258,7 +258,7 @@ impl<'a> ClientHandshake<'a> {
         #[cfg(not(feature = "qkd"))]
         let qkd_proof: Option<Vec<u8>> = None;
         #[cfg(not(feature = "qkd"))]
-        let qkd_key: Option<Vec<u8>> = None;
+        let _qkd_key: Option<Vec<u8>> = None;
 
         // Add QKD proof to the key exchange message
         let mut key_exchange_msg = key_exchange_msg;
@@ -604,7 +604,7 @@ impl<'a> ClientHandshake<'a> {
 /// Server-side handshake
 pub struct ServerHandshake {
     stream: TcpStream,
-    host_key: PqKeyExchange,
+    _host_key: PqKeyExchange,
     auth_manager: Option<AuthorizedKeysManager>,
     password_manager: Option<crate::auth::PasswordAuthManager>,
     qkd_endpoint: Option<String>,
@@ -612,7 +612,7 @@ pub struct ServerHandshake {
 
 impl ServerHandshake {
     pub fn new(stream: TcpStream, host_key: PqKeyExchange) -> Self {
-        let mut password_manager = crate::auth::system_password_auth();
+        let password_manager = crate::auth::system_password_auth();
 
         // Try to load passwords (ignore errors)
         let pm_clone = crate::auth::system_password_auth();
@@ -622,7 +622,7 @@ impl ServerHandshake {
 
         Self {
             stream,
-            host_key,
+            _host_key: host_key,
             auth_manager: Some(crate::auth::system_authorized_keys()),
             password_manager: Some(password_manager),
             qkd_endpoint: None,

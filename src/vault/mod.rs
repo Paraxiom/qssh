@@ -66,7 +66,7 @@ struct LamportKeyChain {
     /// Pre-generated keypairs
     keypairs: Vec<LamportKeypair>,
     /// Root seed for deterministic generation
-    root_seed: [u8; 32],
+    _root_seed: [u8; 32],
 }
 
 impl QuantumVault {
@@ -336,7 +336,7 @@ impl QuantumVault {
         let chain = LamportKeyChain {
             current_index: 0,
             keypairs,
-            root_seed,
+            _root_seed: root_seed,
         };
 
         let mut chains = self.lamport_keys.write().await;

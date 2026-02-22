@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 use std::collections::HashMap;
-use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{RwLock, mpsc};
 use crate::{Result, QsshError};
@@ -175,9 +175,9 @@ async fn handle_x11_connection(
     stream.read_exact(&mut auth_buffer).await?;
 
     // Parse X11 authentication
-    let byte_order = auth_buffer[0];
-    let protocol_major = u16::from_be_bytes([auth_buffer[2], auth_buffer[3]]);
-    let protocol_minor = u16::from_be_bytes([auth_buffer[4], auth_buffer[5]]);
+    let _byte_order = auth_buffer[0];
+    let _protocol_major = u16::from_be_bytes([auth_buffer[2], auth_buffer[3]]);
+    let _protocol_minor = u16::from_be_bytes([auth_buffer[4], auth_buffer[5]]);
     let auth_proto_len = u16::from_be_bytes([auth_buffer[6], auth_buffer[7]]) as usize;
     let auth_data_len = u16::from_be_bytes([auth_buffer[8], auth_buffer[9]]) as usize;
 

@@ -1,7 +1,7 @@
 //! QSSH Password Management Tool
 
 use clap::Parser;
-use qssh::auth::{PasswordAuthManager, hash_password};
+use qssh::auth::PasswordAuthManager;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]

@@ -6,7 +6,7 @@
 use crate::{QsshError, Result};
 use pqcrypto_sphincsplus::sphincssha256128ssimple as sphincs;
 use pqcrypto_falcon::falcon512;
-use pqcrypto_traits::sign::{PublicKey as _, SecretKey as _, DetachedSignature as _};
+use pqcrypto_traits::sign::{PublicKey as _, DetachedSignature as _};
 use sha3::{Sha3_512, Digest};
 use zeroize::Zeroize;
 use rand::RngCore;
@@ -107,7 +107,7 @@ impl QuantumKem {
         }
 
         // Parse components
-        let peer_falcon_pk = &ciphertext[..FALCON_PK_SIZE];
+        let _peer_falcon_pk = &ciphertext[..FALCON_PK_SIZE];
         let ephemeral_secret = &ciphertext[FALCON_PK_SIZE..FALCON_PK_SIZE + EPHEMERAL_SIZE];
         let signature = &ciphertext[FALCON_PK_SIZE + EPHEMERAL_SIZE..];
 

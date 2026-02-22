@@ -3,14 +3,13 @@
 //! Provides key management and signing services for QSSH clients
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use serde::{Serialize, Deserialize};
 use crate::{Result, QsshError, PqAlgorithm};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 mod tests;

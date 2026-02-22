@@ -145,7 +145,7 @@ impl NatTraversal {
     }
     
     /// Detect specific NAT type
-    async fn detect_nat_type(&self, socket: &UdpSocket) -> Result<NatType> {
+    async fn detect_nat_type(&self, _socket: &UdpSocket) -> Result<NatType> {
         // Simplified detection - in production, use multiple STUN servers
         // and perform various tests
         

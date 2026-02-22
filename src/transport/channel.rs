@@ -137,7 +137,7 @@ pub struct PortForward {
     local_port: u16,
     remote_host: String,
     remote_port: u16,
-    channel_id: Option<u32>,
+    _channel_id: Option<u32>,
 }
 
 impl PortForward {
@@ -146,7 +146,7 @@ impl PortForward {
             local_port,
             remote_host,
             remote_port,
-            channel_id: None,
+            _channel_id: None,
         }
     }
     

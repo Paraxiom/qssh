@@ -2,7 +2,7 @@
 //!
 //! Handles verification and storage of host keys for TOFU (Trust On First Use)
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -21,7 +21,7 @@ pub struct KnownHosts {
     /// In-memory cache of host entries
     entries: HashMap<String, Vec<HostKey>>,
     /// Strict host key checking mode
-    strict_checking: bool,
+    _strict_checking: bool,
 }
 
 /// A host key entry
@@ -69,7 +69,7 @@ impl KnownHosts {
         let mut known_hosts = Self {
             file_path,
             entries: HashMap::new(),
-            strict_checking,
+            _strict_checking: strict_checking,
         };
 
         // Load existing entries

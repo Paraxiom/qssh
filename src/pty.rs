@@ -4,7 +4,7 @@
 //! for interactive shell sessions.
 
 use crate::{Result, QsshError};
-use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::os::unix::io::RawFd;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 #[cfg(unix)]
@@ -168,11 +168,11 @@ impl AsyncRead for PtyReader {
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         // Use tokio's AsyncFd for async operations
-        let mut async_fd = match tokio::io::unix::AsyncFd::new(self.fd) {
+        let async_fd = match tokio::io::unix::AsyncFd::new(self.fd) {
             Ok(fd) => fd,
             Err(e) => return std::task::Poll::Ready(Err(e)),
         };
-        
+
         match async_fd.poll_read_ready(cx) {
             std::task::Poll::Ready(Ok(mut guard)) => {
                 let unfilled = buf.initialize_unfilled();
@@ -215,11 +215,11 @@ impl AsyncWrite for PtyWriter {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<std::io::Result<usize>> {
-        let mut async_fd = match tokio::io::unix::AsyncFd::new(self.fd) {
+        let async_fd = match tokio::io::unix::AsyncFd::new(self.fd) {
             Ok(fd) => fd,
             Err(e) => return std::task::Poll::Ready(Err(e)),
         };
-        
+
         match async_fd.poll_write_ready(cx) {
             std::task::Poll::Ready(Ok(mut guard)) => {
                 match unsafe {

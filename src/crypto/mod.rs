@@ -130,7 +130,7 @@ impl PqKeyExchange {
         }
         
         // Verify Falcon signature using detached signature verification
-        use pqcrypto_traits::sign::{PublicKey as PubKey, DetachedSignature};
+        use pqcrypto_traits::sign::DetachedSignature;
 
         let pk = match falcon512::PublicKey::from_bytes(peer_falcon_pk) {
             Ok(key) => key,
@@ -288,7 +288,7 @@ impl PqKeyExchange {
         }
 
         let mut pos = 5;
-        let mut read_field = |pos: &mut usize, name: &str| -> Result<Vec<u8>> {
+        let read_field = |pos: &mut usize, name: &str| -> Result<Vec<u8>> {
             if *pos + 4 > data.len() {
                 return Err(QsshError::Crypto(format!("Truncated host key: missing {} length", name)));
             }

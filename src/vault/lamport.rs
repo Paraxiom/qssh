@@ -2,7 +2,7 @@
 //! 
 //! Quantum-resistant signatures using only hash functions
 
-use sha3::{Sha3_256, Sha3_512, Digest};
+use sha3::{Sha3_256, Digest};
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use zeroize::Zeroize;
@@ -145,7 +145,7 @@ pub struct LamportMerkleTree {
     /// Leaf nodes (public key hashes)
     leaves: Vec<[u8; 32]>,
     /// Root hash
-    root: [u8; 32],
+    _root: [u8; 32],
 }
 
 impl LamportMerkleTree {
@@ -175,7 +175,7 @@ impl LamportMerkleTree {
         Self {
             height,
             leaves,
-            root,
+            _root: root,
         }
     }
     

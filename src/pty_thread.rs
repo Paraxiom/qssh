@@ -1,7 +1,7 @@
 //! PTY handler using blocking thread (the reliable approach)
 
 use crate::{Result, QsshError};
-use std::os::unix::io::{AsRawFd, RawFd, FromRawFd};
+use std::os::unix::io::{RawFd, FromRawFd};
 use tokio::sync::mpsc;
 use std::io::{Read, Write};
 

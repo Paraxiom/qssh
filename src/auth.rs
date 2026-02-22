@@ -129,7 +129,7 @@ impl AuthorizedKeysManager {
     fn parse_key_line(&self, line: &str) -> Option<AuthorizedKey> {
         let mut parts = line.split_whitespace();
         let mut key_type = parts.next()?;
-        let mut key_data;
+        let key_data;
         let mut comment = None;
         let mut options = KeyOptions::default();
         

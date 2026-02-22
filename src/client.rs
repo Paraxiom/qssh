@@ -11,7 +11,6 @@ use crate::{
 };
 use pqcrypto_traits::sign::PublicKey as _;
 use tokio::net::TcpStream;
-use tokio::io::AsyncWriteExt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -516,6 +515,7 @@ impl QsshClient {
     }
     
     /// Start background transport handler
+    #[allow(dead_code)]
     fn start_transport_handler(&self) -> Result<()> {
         let transport = self.transport.as_ref()
             .ok_or_else(|| QsshError::Protocol("Transport not available".into()))?
@@ -846,6 +846,7 @@ impl QsshClient {
 }
 
 /// Handle incoming messages
+#[allow(dead_code)]
 async fn handle_message(msg: Message, channel_manager: &ChannelManager) -> Result<()> {
     match msg {
         Message::Channel(channel_msg) => {

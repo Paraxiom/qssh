@@ -9,7 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex};
 use crate::{Result, QsshError};
 use crate::transport::{Transport, Message, ChannelMessage, ChannelType,
-    GlobalRequestMessage, GlobalRequestType, GlobalRequestSuccessMessage};
+    GlobalRequestMessage, GlobalRequestType};
 
 /// Port forwarding types
 #[derive(Debug, Clone)]
@@ -383,7 +383,7 @@ async fn handle_local_forward(
         Ok(Some(data)) if data.is_empty() => {
             log::debug!("Local forward channel {} accepted", channel_id);
         }
-        Ok(Some(data)) => {
+        Ok(Some(_data)) => {
             // Got data before accept — server may have started sending immediately
             log::debug!("Local forward channel {} got data before explicit accept", channel_id);
             // Re-queue this data by just proceeding — the write_half will consume it below

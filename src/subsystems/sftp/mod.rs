@@ -7,11 +7,8 @@ pub mod session;
 
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::path::PathBuf;
 use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::Subsystem;
 
@@ -22,7 +19,7 @@ use session::SftpSession;
 /// SFTP Subsystem
 pub struct SftpSubsystem {
     sftp_session: SftpSession,
-    root_dir: PathBuf,
+    _root_dir: PathBuf,
     handles: HashMap<String, FileHandle>,
     next_handle_id: u32,
 }
@@ -33,7 +30,7 @@ impl SftpSubsystem {
 
         SftpSubsystem {
             sftp_session: SftpSession::new(),
-            root_dir: PathBuf::from(home_dir),
+            _root_dir: PathBuf::from(home_dir),
             handles: HashMap::new(),
             next_handle_id: 1,
         }
@@ -50,7 +47,7 @@ impl SftpSubsystem {
 
         SftpSubsystem {
             sftp_session: SftpSession::for_user(username, root_dir.clone()),
-            root_dir,
+            _root_dir: root_dir,
             handles: HashMap::new(),
             next_handle_id: 1,
         }
@@ -59,7 +56,7 @@ impl SftpSubsystem {
     pub fn with_root(root_dir: PathBuf) -> Self {
         SftpSubsystem {
             sftp_session: SftpSession::new(),
-            root_dir,
+            _root_dir: root_dir,
             handles: HashMap::new(),
             next_handle_id: 1,
         }

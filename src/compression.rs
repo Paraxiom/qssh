@@ -4,8 +4,8 @@
 
 use std::io::{Read, Write};
 use flate2::Compression as ZlibLevel;
-use flate2::read::{ZlibDecoder, ZlibEncoder};
-use flate2::write::{ZlibDecoder as ZlibWriteDecoder, ZlibEncoder as ZlibWriteEncoder};
+use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder as ZlibWriteEncoder;
 use crate::{Result, QsshError};
 
 /// Compression algorithms supported by QSSH

@@ -109,15 +109,15 @@ impl QsshServer {
 
 /// Client connection state
 struct ClientConnection {
-    username: String,
-    transport: Transport,
+    _username: String,
+    _transport: Transport,
     channels: HashMap<u32, Channel>,
 }
 
 /// Channel state
 struct Channel {
-    id: u32,
-    channel_type: ChannelType,
+    _id: u32,
+    _channel_type: ChannelType,
     /// PTY info stored from PtyRequest, used when ShellRequest arrives
     pty: Option<PtyInfo>,
 }
@@ -169,8 +169,8 @@ async fn handle_connection(
     
     // Create connection state
     let connection = ClientConnection {
-        username: username.clone(),
-        transport: transport.clone(),
+        _username: username.clone(),
+        _transport: transport.clone(),
         channels: HashMap::new(),
     };
     
@@ -278,7 +278,7 @@ async fn handle_rekey(
     transport: &Transport,
     username: &str,
 ) -> Result<()> {
-    use sha3::{Sha3_256, Digest};
+    use sha3::Sha3_256;
     use hkdf::Hkdf;
 
     log::info!("Processing rekey from {} (rekey #{})", username, transport.rekey_count() + 1);
@@ -648,8 +648,8 @@ async fn handle_channel_message(
                 let mut conns = connections.lock().await;
                 if let Some(conn) = conns.get_mut(username) {
                     conn.channels.insert(channel_id, Channel {
-                        id: channel_id,
-                        channel_type,
+                        _id: channel_id,
+                        _channel_type: channel_type,
                         pty: None,
                     });
                 }
@@ -670,8 +670,8 @@ async fn handle_channel_message(
             let mut conns = connections.lock().await;
             if let Some(conn) = conns.get_mut(username) {
                 conn.channels.insert(channel_id, Channel {
-                    id: channel_id,
-                    channel_type,
+                    _id: channel_id,
+                    _channel_type: channel_type,
                     pty: None,
                 });
             }

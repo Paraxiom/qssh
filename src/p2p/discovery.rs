@@ -55,7 +55,7 @@ impl Discovery {
         socket.set_broadcast(true)?;
         
         // Announce ourselves periodically
-        let announce_task = {
+        let _announce_task = {
             let socket = socket.clone();
             let our_info = bincode::serialize(&self.session.our_info)
                 .map_err(|e| QsshError::Protocol(format!("Serialization failed: {}", e)))?;

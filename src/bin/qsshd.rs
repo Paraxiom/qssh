@@ -21,9 +21,9 @@ struct QkdFileConfig {
     /// Path to CA certificate
     ca_path: Option<String>,
     /// Request timeout in milliseconds
-    timeout_ms: Option<u64>,
+    _timeout_ms: Option<u64>,
     /// Minimum entropy threshold
-    min_entropy: Option<f64>,
+    _min_entropy: Option<f64>,
 }
 
 #[derive(Parser, Debug)]

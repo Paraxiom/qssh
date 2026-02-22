@@ -6,7 +6,7 @@
 /// - Consider using qssh-agent and key authentication instead
 
 use std::process::{Command, Stdio};
-use std::io::{Write, Read};
+use std::io::Write;
 use clap::Parser;
 
 #[derive(Parser)]

@@ -18,7 +18,7 @@ pub struct QuantumRng {
     qrng_endpoint: Option<String>,
 
     /// Cached quantum entropy
-    entropy_cache: Arc<Mutex<Vec<u8>>>,
+    _entropy_cache: Arc<Mutex<Vec<u8>>>,
 
     /// Whether to mix quantum entropy with OS entropy (defense in depth)
     mix_with_os: bool,
@@ -33,7 +33,7 @@ impl QuantumRng {
         Self {
             fallback,
             qrng_endpoint,
-            entropy_cache: Arc::new(Mutex::new(Vec::new())),
+            _entropy_cache: Arc::new(Mutex::new(Vec::new())),
             mix_with_os: true, // Always mix for defense in depth
         }
     }
@@ -58,7 +58,7 @@ impl QuantumRng {
     }
 
     /// Fetch entropy from QRNG endpoint
-    async fn fetch_from_qrng(&self, endpoint: &str, num_bytes: usize) -> Result<Vec<u8>, String> {
+    async fn fetch_from_qrng(&self, _endpoint: &str, _num_bytes: usize) -> Result<Vec<u8>, String> {
         // In production, this would call the actual QRNG API
         // For now, return error to trigger fallback
         Err("QRNG not yet implemented".to_string())

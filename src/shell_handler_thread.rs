@@ -1,9 +1,9 @@
 //! Shell handler using blocking threads for PTY I/O
 
-use crate::{Result, QsshError, transport::{Transport, Message, ChannelMessage, ChannelType}};
+use crate::{Result, QsshError, transport::{Transport, Message, ChannelMessage}};
 use crate::port_forward::ForwardedChannelRouter;
 use crate::pty_thread::PtyThread;
-use tokio::process::{Command, Child};
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use std::process::Stdio;
 use std::os::unix::io::FromRawFd;
