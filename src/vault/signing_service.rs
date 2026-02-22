@@ -160,13 +160,16 @@ impl SigningService {
                 return Err(QsshError::Io(std::io::Error::last_os_error()));
             }
             // Prevent core dumps of this memory region
-            if libc::madvise(
-                ptr as *mut libc::c_void,
-                len,
-                libc::MADV_ZERO_WIRED_PAGES, // macOS equivalent; on Linux use MADV_DONTDUMP
-            ) != 0 {
+            #[cfg(target_os = "linux")]
+            let madvise_flag = libc::MADV_DONTDUMP;
+            #[cfg(target_os = "macos")]
+            let madvise_flag = libc::MADV_ZERO_WIRED_PAGES;
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            let madvise_flag = 0; // no-op on other platforms
+
+            if libc::madvise(ptr as *mut libc::c_void, len, madvise_flag) != 0 {
                 // Non-fatal — mlock is more important
-                log::warn!("madvise MADV_ZERO_WIRED_PAGES failed: {}", std::io::Error::last_os_error());
+                log::warn!("madvise failed: {}", std::io::Error::last_os_error());
             }
         }
         Ok(())
