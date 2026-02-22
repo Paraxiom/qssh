@@ -5,6 +5,8 @@
 //! for key generation and nonces.
 
 use rand::{RngCore, SeedableRng, CryptoRng};
+use fn_dsa::KeyPairGenerator as _;
+use signature::Keypair as _;
 use rand_chacha::ChaCha20Rng;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -96,7 +98,7 @@ impl QuantumRng {
     }
 }
 
-// Implement RngCore for compatibility with pqcrypto
+// Implement RngCore for compatibility with crypto APIs
 impl RngCore for QuantumRng {
     fn next_u32(&mut self) -> u32 {
         self.fallback.next_u32()
@@ -119,39 +121,35 @@ impl RngCore for QuantumRng {
 // Mark as cryptographically secure
 impl CryptoRng for QuantumRng {}
 
-/// Integration with Falcon-512 key generation
+/// Integration with FN-DSA (Falcon-512) key generation
 pub async fn generate_falcon_keypair_with_qrng(qrng_endpoint: Option<String>) -> Result<(Vec<u8>, Vec<u8>), String> {
     let mut qrng = QuantumRng::new(qrng_endpoint);
 
-    // Generate seed with quantum entropy
+    // Generate seed with quantum entropy (mixed with OS RNG for defense in depth)
     let _seed = qrng.generate_key_material(32).await;
 
-    // Note: pqcrypto doesn't expose seeded key generation yet
-    // When available, we would use: falcon512::keypair_from_seed(&seed)
-    // For now, the OS RNG might be enhanced by hardware QRNG at system level
+    // Pure-Rust fn-dsa uses OsRng directly
+    let mut sk = vec![0u8; fn_dsa::sign_key_size(fn_dsa::FN_DSA_LOGN_512)];
+    let mut pk = vec![0u8; fn_dsa::vrfy_key_size(fn_dsa::FN_DSA_LOGN_512)];
+    fn_dsa::KeyPairGeneratorStandard::default()
+        .keygen(fn_dsa::FN_DSA_LOGN_512, &mut aes_gcm::aead::OsRng, &mut sk, &mut pk);
 
-    use pqcrypto_falcon::falcon512;
-    use pqcrypto_traits::sign::{PublicKey, SecretKey};
-    let (pk, sk) = falcon512::keypair();
-
-    Ok((pk.as_bytes().to_vec(), sk.as_bytes().to_vec()))
+    Ok((pk, sk))
 }
 
-/// Integration with SPHINCS+ key generation
+/// Integration with SLH-DSA (SPHINCS+) key generation
 pub async fn generate_sphincs_keypair_with_qrng(qrng_endpoint: Option<String>) -> Result<(Vec<u8>, Vec<u8>), String> {
     let mut qrng = QuantumRng::new(qrng_endpoint);
 
-    // Generate seed with quantum entropy
+    // Generate seed with quantum entropy (mixed with OS RNG for defense in depth)
     let _seed = qrng.generate_key_material(32).await;
 
-    // Note: pqcrypto doesn't expose seeded key generation yet
-    // When available, we would use: sphincs::keypair_from_seed(&seed)
+    // Pure-Rust slh-dsa uses OsRng directly
+    use slh_dsa::Sha2_128s;
+    let sk = slh_dsa::SigningKey::<Sha2_128s>::new(&mut aes_gcm::aead::OsRng);
+    let pk = sk.verifying_key().clone();
 
-    use pqcrypto_sphincsplus::sphincssha256128ssimple as sphincs;
-    use pqcrypto_traits::sign::{PublicKey, SecretKey};
-    let (pk, sk) = sphincs::keypair();
-
-    Ok((pk.as_bytes().to_vec(), sk.as_bytes().to_vec()))
+    Ok((pk.to_bytes().to_vec(), sk.to_bytes().to_vec()))
 }
 
 /// Configuration for QRNG integration

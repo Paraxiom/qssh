@@ -9,7 +9,6 @@ use crate::{
     x11::{X11Forwarder, setup_x11_forwarding},
     port_forward::{RemoteForwardRegistry, ForwardedChannelRouter, handle_forwarded_channel},
 };
-use pqcrypto_traits::sign::PublicKey as _;
 use tokio::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
@@ -292,7 +291,7 @@ impl QsshClient {
 
         // 2. Send rekey request
         let rekey_msg = RekeyMessage {
-            new_falcon_public_key: client_kex.falcon_pk.as_bytes().to_vec(),
+            new_falcon_public_key: client_kex.falcon_pk.clone(),
             new_key_share: client_share.clone(),
             new_key_share_signature: client_sig,
             request_qkd: false,
@@ -887,7 +886,7 @@ async fn rekey_with_transport(transport: &Transport) -> Result<()> {
     let (client_share, client_sig) = client_kex.create_key_share()?;
 
     let rekey_msg = RekeyMessage {
-        new_falcon_public_key: client_kex.falcon_pk.as_bytes().to_vec(),
+        new_falcon_public_key: client_kex.falcon_pk.clone(),
         new_key_share: client_share.clone(),
         new_key_share_signature: client_sig,
         request_qkd: false,

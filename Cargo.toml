@@ -15,12 +15,10 @@ exclude = ["lean/", "target/package/"]
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }
 
-# Post-quantum cryptography
-pqcrypto = "0.17"
-pqcrypto-traits = "0.3"
-pqcrypto-sphincsplus = "0.5"
-pqcrypto-falcon = "0.2"
-pqcrypto-dilithium = "0.5"
+# Post-quantum signatures (pure Rust — no C FFI)
+fn-dsa = "0.3"
+slh-dsa = "0.0.3"
+signature = "2"
 
 # ML-KEM (FIPS 203) - replaces vulnerable Kyber
 ml-kem = "0.2"

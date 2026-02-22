@@ -1,49 +1,44 @@
-//! Standalone binary to test pqcrypto initialization
+//! Standalone binary to test pure-Rust PQC implementations (fn-dsa + slh-dsa)
+
+use fn_dsa::KeyPairGenerator as _;
+use signature::Keypair as _;
 
 fn main() {
-    println!("Testing pqcrypto keypair generation as standalone binary...\n");
+    println!("Testing pure-Rust post-quantum crypto...\n");
 
-    // Set larger stack size if needed
-    std::thread::Builder::new()
-        .stack_size(16 * 1024 * 1024) // 16MB stack
-        .spawn(|| {
-            test_keypairs();
-        })
-        .unwrap()
-        .join()
-        .unwrap();
-}
-
-fn test_keypairs() {
-    use pqcrypto_sphincsplus::sphincsharaka128fsimple as sphincs;
-    use pqcrypto_falcon::falcon512;
-    use pqcrypto_traits::sign::{PublicKey, SecretKey};
-
-    println!("Generating SPHINCS+ keypair...");
+    println!("Generating SLH-DSA (SPHINCS+) keypair...");
     match std::panic::catch_unwind(|| {
-        sphincs::keypair()
+        use aes_gcm::aead::OsRng;
+        let sk = slh_dsa::SigningKey::<slh_dsa::Sha2_128s>::new(&mut OsRng);
+        let pk = sk.verifying_key().clone();
+        (sk.to_bytes().to_vec(), pk.to_bytes().to_vec())
     }) {
-        Ok((pk, sk)) => {
-            println!("✅ SPHINCS+ keypair generated successfully!");
-            println!("   Public key: {} bytes", pk.as_bytes().len());
-            println!("   Secret key: {} bytes", sk.as_bytes().len());
+        Ok((sk, pk)) => {
+            println!("  SLH-DSA keypair generated successfully!");
+            println!("   Public key: {} bytes", pk.len());
+            println!("   Secret key: {} bytes", sk.len());
         }
         Err(e) => {
-            println!("❌ SPHINCS+ keypair generation panicked: {:?}", e);
+            println!("  SLH-DSA keypair generation panicked: {:?}", e);
         }
     }
 
-    println!("\nGenerating Falcon-512 keypair...");
+    println!("\nGenerating FN-DSA (Falcon-512) keypair...");
     match std::panic::catch_unwind(|| {
-        falcon512::keypair()
+        use aes_gcm::aead::OsRng;
+        let mut sk = vec![0u8; fn_dsa::sign_key_size(fn_dsa::FN_DSA_LOGN_512)];
+        let mut pk = vec![0u8; fn_dsa::vrfy_key_size(fn_dsa::FN_DSA_LOGN_512)];
+        fn_dsa::KeyPairGeneratorStandard::default()
+            .keygen(fn_dsa::FN_DSA_LOGN_512, &mut OsRng, &mut sk, &mut pk);
+        (sk, pk)
     }) {
-        Ok((pk, sk)) => {
-            println!("✅ Falcon-512 keypair generated successfully!");
-            println!("   Public key: {} bytes", pk.as_bytes().len());
-            println!("   Secret key: {} bytes", sk.as_bytes().len());
+        Ok((sk, pk)) => {
+            println!("  FN-DSA keypair generated successfully!");
+            println!("   Public key: {} bytes", pk.len());
+            println!("   Secret key: {} bytes", sk.len());
         }
         Err(e) => {
-            println!("❌ Falcon-512 keypair generation panicked: {:?}", e);
+            println!("  FN-DSA keypair generation panicked: {:?}", e);
         }
     }
 }

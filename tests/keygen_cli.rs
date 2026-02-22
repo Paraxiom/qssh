@@ -3,8 +3,6 @@
 //! Verifies CLI argument validation, classical algorithm rejection, and
 //! quantum-safe key generation output format.
 //!
-//! NOTE: Tests that invoke actual PQ keygen are `#[ignore]` on macOS due to
-//! the pqcrypto-falcon FFI segfault. They run on Linux CI.
 
 use std::process::Command;
 
@@ -42,9 +40,7 @@ fn test_ed25519_key_type_rejected() {
     );
 }
 
-/// Ignored on macOS: pqcrypto-falcon FFI segfaults during Falcon keygen.
 #[test]
-#[cfg_attr(target_os = "macos", ignore)]
 fn test_falcon512_key_generation_succeeds() {
     let tmp_dir = tempfile::TempDir::new().unwrap();
     let key_path = tmp_dir.path().join("id_falcon");
@@ -73,9 +69,7 @@ fn test_falcon512_key_generation_succeeds() {
     assert!(pub_contents.contains("test@qssh"), "Public key should contain the comment");
 }
 
-/// Ignored on macOS: pqcrypto-falcon FFI segfaults during keygen init.
 #[test]
-#[cfg_attr(target_os = "macos", ignore)]
 fn test_sphincsplus_key_generation_succeeds() {
     let tmp_dir = tempfile::TempDir::new().unwrap();
     let key_path = tmp_dir.path().join("id_sphincs");
@@ -99,9 +93,7 @@ fn test_sphincsplus_key_generation_succeeds() {
     assert!(pub_contents.starts_with("qssh-sphincs+ "), "Public key should start with algorithm");
 }
 
-/// Ignored on macOS: pqcrypto-falcon FFI segfaults during keygen.
 #[test]
-#[cfg_attr(target_os = "macos", ignore)]
 fn test_private_key_permissions() {
     let tmp_dir = tempfile::TempDir::new().unwrap();
     let key_path = tmp_dir.path().join("id_perms");
@@ -121,9 +113,7 @@ fn test_private_key_permissions() {
     assert_eq!(mode, 0o600, "Private key should have 0600 permissions, got {:o}", mode);
 }
 
-/// Ignored on macOS: pqcrypto-falcon FFI segfaults during keygen.
 #[test]
-#[cfg_attr(target_os = "macos", ignore)]
 fn test_private_key_format() {
     let tmp_dir = tempfile::TempDir::new().unwrap();
     let key_path = tmp_dir.path().join("id_format");

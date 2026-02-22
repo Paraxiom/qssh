@@ -10,6 +10,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use serde::{Serialize, Deserialize};
 use crate::{Result, QsshError, PqAlgorithm};
+use fn_dsa::SigningKey as FnSigningKeyTrait;
 
 #[cfg(test)]
 mod tests;
@@ -533,30 +534,19 @@ async fn handle_request(
 async fn sign_with_key(key: &StoredKey, data: &[u8]) -> Result<Vec<u8>> {
     match key.algorithm {
         PqAlgorithm::Falcon512 => {
-            use pqcrypto_falcon::falcon512;
-            use pqcrypto_traits::sign::{SecretKey as SecretKeyTrait, SignedMessage as SignedMessageTrait};
-
-            // Reconstruct secret key from bytes
-            let sk_bytes: [u8; falcon512::secret_key_bytes()] = key.private_key[..falcon512::secret_key_bytes()]
-                .try_into()
-                .map_err(|_| QsshError::Crypto("Invalid Falcon key size".into()))?;
-            let sk = falcon512::SecretKey::from_bytes(&sk_bytes)
-                .map_err(|_| QsshError::Crypto("Invalid Falcon key".into()))?;
-
-            let signature = falcon512::sign(data, &sk);
-            Ok(signature.as_bytes().to_vec())
+            let mut sk = fn_dsa::SigningKeyStandard::decode(&key.private_key)
+                .ok_or_else(|| QsshError::Crypto("Invalid Falcon key".into()))?;
+            let mut sig = vec![0u8; fn_dsa::signature_size(fn_dsa::FN_DSA_LOGN_512)];
+            sk.sign(&mut aes_gcm::aead::OsRng, &fn_dsa::DOMAIN_NONE, &fn_dsa::HASH_ID_RAW, data, &mut sig);
+            Ok(sig)
         }
         PqAlgorithm::SphincsPlus => {
-            use pqcrypto_sphincsplus::sphincssha256128ssimple as sphincs;
-            use pqcrypto_traits::sign::{SecretKey as SecretKeyTrait, SignedMessage as SignedMessageTrait};
-
-            // Reconstruct secret key from bytes
-            let sk_bytes: Vec<u8> = key.private_key.clone();
-            let sk = sphincs::SecretKey::from_bytes(&sk_bytes[..sphincs::secret_key_bytes()])
+            use signature::Signer;
+            let sk = slh_dsa::SigningKey::<slh_dsa::Sha2_128s>::try_from(key.private_key.as_slice())
                 .map_err(|_| QsshError::Crypto("Invalid SPHINCS+ key".into()))?;
-
-            let signature = sphincs::sign(data, &sk);
-            Ok(signature.as_bytes().to_vec())
+            let sig: slh_dsa::Signature<slh_dsa::Sha2_128s> = Signer::try_sign(&sk, data)
+                .map_err(|e| QsshError::Crypto(format!("SPHINCS+ signing failed: {}", e)))?;
+            Ok(sig.to_bytes().to_vec())
         }
         _ => Err(QsshError::Protocol("Unsupported algorithm".into())),
     }

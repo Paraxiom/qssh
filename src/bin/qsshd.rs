@@ -347,10 +347,9 @@ async fn generate_host_keys(path: &PathBuf) -> Result<(), Box<dyn std::error::Er
     let pk_path = path.with_extension("pub");
     let fingerprint = {
         use sha2::{Sha256, Digest};
-        use pqcrypto_traits::sign::PublicKey as _;
         let mut hasher = Sha256::new();
         hasher.update(host_key.public_bytes());
-        hasher.update(host_key.falcon_pk.as_bytes());
+        hasher.update(&host_key.falcon_pk);
         let hash = hasher.finalize();
         base64::engine::general_purpose::STANDARD_NO_PAD.encode(&hash[..])
     };

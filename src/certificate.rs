@@ -8,6 +8,8 @@ use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
 use crate::{Result, QsshError, PqAlgorithm};
 use sha2::{Sha256, Digest};
+use fn_dsa::{KeyPairGenerator as _, SigningKey as FnSigningKeyTrait, VerifyingKey as FnVerifyingKeyTrait};
+use signature::Keypair as _;
 
 /// SSH Certificate Type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,16 +446,16 @@ impl CertificateInfo {
 fn generate_ca_keypair(algorithm: PqAlgorithm) -> Result<(Vec<u8>, Vec<u8>)> {
     match algorithm {
         PqAlgorithm::Falcon512 => {
-            use pqcrypto_falcon::falcon512;
-            use pqcrypto_traits::sign::{SecretKey, PublicKey};
-            let (pk, sk) = falcon512::keypair();
-            Ok((sk.as_bytes().to_vec(), pk.as_bytes().to_vec()))
+            let mut sk = vec![0u8; fn_dsa::sign_key_size(fn_dsa::FN_DSA_LOGN_512)];
+            let mut pk = vec![0u8; fn_dsa::vrfy_key_size(fn_dsa::FN_DSA_LOGN_512)];
+            fn_dsa::KeyPairGeneratorStandard::default()
+                .keygen(fn_dsa::FN_DSA_LOGN_512, &mut aes_gcm::aead::OsRng, &mut sk, &mut pk);
+            Ok((sk, pk))
         },
         PqAlgorithm::SphincsPlus => {
-            use pqcrypto_sphincsplus::sphincssha256128ssimple as sphincs;
-            use pqcrypto_traits::sign::{SecretKey, PublicKey};
-            let (pk, sk) = sphincs::keypair();
-            Ok((sk.as_bytes().to_vec(), pk.as_bytes().to_vec()))
+            let sk = slh_dsa::SigningKey::<slh_dsa::Sha2_128s>::new(&mut aes_gcm::aead::OsRng);
+            let pk = sk.verifying_key().clone();
+            Ok((sk.to_bytes().to_vec(), pk.to_bytes().to_vec()))
         },
         _ => Err(QsshError::Protocol("Unsupported algorithm for CA".into())),
     }
@@ -498,51 +500,37 @@ fn serialize_for_signing(cert: &SshCertificate) -> Result<Vec<u8>> {
 }
 
 fn sign_falcon(data: &[u8], private_key: &[u8]) -> Result<Vec<u8>> {
-    use pqcrypto_falcon::falcon512;
-    use pqcrypto_traits::sign::{SecretKey, SignedMessage};
-
-    let sk = falcon512::SecretKey::from_bytes(private_key)
-        .map_err(|_| QsshError::Crypto("Invalid Falcon private key".into()))?;
-
-    let signature = falcon512::sign(data, &sk);
-    Ok(signature.as_bytes().to_vec())
+    let mut sk = fn_dsa::SigningKeyStandard::decode(private_key)
+        .ok_or_else(|| QsshError::Crypto("Invalid Falcon private key".into()))?;
+    let mut sig = vec![0u8; fn_dsa::signature_size(fn_dsa::FN_DSA_LOGN_512)];
+    sk.sign(&mut aes_gcm::aead::OsRng, &fn_dsa::DOMAIN_NONE, &fn_dsa::HASH_ID_RAW, data, &mut sig);
+    Ok(sig)
 }
 
 fn verify_falcon(data: &[u8], signature: &[u8], public_key: &[u8]) -> Result<bool> {
-    use pqcrypto_falcon::falcon512;
-    use pqcrypto_traits::sign::{PublicKey as PubKey, DetachedSignature};
-
-    let pk = falcon512::PublicKey::from_bytes(public_key)
-        .map_err(|_| QsshError::Crypto("Invalid Falcon public key".into()))?;
-
-    let sig = falcon512::DetachedSignature::from_bytes(signature)
-        .map_err(|_| QsshError::Crypto("Invalid Falcon signature".into()))?;
-
-    Ok(falcon512::verify_detached_signature(&sig, data, &pk).is_ok())
+    let vk = fn_dsa::VerifyingKeyStandard::decode(public_key)
+        .ok_or_else(|| QsshError::Crypto("Invalid Falcon public key".into()))?;
+    Ok(vk.verify(signature, &fn_dsa::DOMAIN_NONE, &fn_dsa::HASH_ID_RAW, data))
 }
 
 fn sign_sphincs(data: &[u8], private_key: &[u8]) -> Result<Vec<u8>> {
-    use pqcrypto_sphincsplus::sphincssha256128ssimple as sphincs;
-    use pqcrypto_traits::sign::{SecretKey, SignedMessage};
+    use signature::Signer;
 
-    let sk = sphincs::SecretKey::from_bytes(private_key)
+    let sk = slh_dsa::SigningKey::<slh_dsa::Sha2_128s>::try_from(private_key)
         .map_err(|_| QsshError::Crypto("Invalid SPHINCS+ private key".into()))?;
-
-    let signature = sphincs::sign(data, &sk);
-    Ok(signature.as_bytes().to_vec())
+    let sig: slh_dsa::Signature<slh_dsa::Sha2_128s> = Signer::try_sign(&sk, data)
+        .map_err(|e| QsshError::Crypto(format!("SPHINCS+ signing failed: {}", e)))?;
+    Ok(sig.to_bytes().to_vec())
 }
 
 fn verify_sphincs(data: &[u8], signature: &[u8], public_key: &[u8]) -> Result<bool> {
-    use pqcrypto_sphincsplus::sphincssha256128ssimple as sphincs;
-    use pqcrypto_traits::sign::{PublicKey as PubKey, DetachedSignature};
+    use signature::Verifier;
 
-    let pk = sphincs::PublicKey::from_bytes(public_key)
+    let pk = slh_dsa::VerifyingKey::<slh_dsa::Sha2_128s>::try_from(public_key)
         .map_err(|_| QsshError::Crypto("Invalid SPHINCS+ public key".into()))?;
-
-    let sig = sphincs::DetachedSignature::from_bytes(signature)
+    let sig = slh_dsa::Signature::<slh_dsa::Sha2_128s>::try_from(signature)
         .map_err(|_| QsshError::Crypto("Invalid SPHINCS+ signature".into()))?;
-
-    Ok(sphincs::verify_detached_signature(&sig, data, &pk).is_ok())
+    Ok(Verifier::verify(&pk, data, &sig).is_ok())
 }
 
 fn apply_default_user_extensions(extensions: &mut HashMap<String, String>) {
@@ -588,9 +576,7 @@ mod tests {
         assert!(!cert.signature.is_empty());
     }
 
-    /// NOTE: Ignored due to Falcon signature verification issues on macOS
     #[test]
-    #[ignore]
     fn test_certificate_validation() {
         let mut ca = CertificateAuthority::new(PqAlgorithm::Falcon512).unwrap();
         let mut validator = CertificateValidator::new();

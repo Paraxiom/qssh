@@ -1,9 +1,12 @@
-//! Post-quantum cryptography module using Falcon + SPHINCS+ + ML-KEM
+//! Post-quantum cryptography module using Falcon (FN-DSA) + SPHINCS+ (SLH-DSA) + ML-KEM
+//! Pure-Rust implementations — no C FFI.
 
 use crate::{QsshError, Result};
-use pqcrypto_sphincsplus::sphincssha256128ssimple as sphincs;
-use pqcrypto_falcon::falcon512;
-use pqcrypto_traits::sign::{PublicKey as SignPublicKey, SignedMessage as SignedMessageTrait};
+use fn_dsa::{FN_DSA_LOGN_512, sign_key_size, vrfy_key_size, signature_size,
+             DOMAIN_NONE, HASH_ID_RAW,
+             KeyPairGenerator as _, SigningKey as FnSigningKeyTrait, VerifyingKey as FnVerifyingKeyTrait};
+use slh_dsa::Sha2_128s;
+use signature::{Signer, Verifier, Keypair as SignatureKeypair};
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Nonce,
@@ -29,42 +32,44 @@ pub use mlkem::{MlKem768KeyPair, MlKem1024KeyPair, mlkem768_encapsulate, mlkem10
 #[cfg(feature = "hybrid-kex")]
 pub use hybrid::{HybridKeyPair, HybridClientExchange, combine_secrets};
 
-/// Post-quantum signature using SPHINCS+
+/// Post-quantum signature using SLH-DSA (SPHINCS+)
 pub struct PqSignature {
-    pub sphincs_sk: sphincs::SecretKey,
-    pub sphincs_pk: sphincs::PublicKey,
+    pub sphincs_sk: Vec<u8>,
+    pub sphincs_pk: Vec<u8>,
 }
 
 impl PqSignature {
-    /// Generate new SPHINCS+ keypair
+    /// Generate new SLH-DSA (SPHINCS+) keypair
     pub fn new() -> Result<Self> {
-        let (sphincs_pk, sphincs_sk) = sphincs::keypair();
-        Ok(Self { sphincs_sk, sphincs_pk })
+        let sk = slh_dsa::SigningKey::<Sha2_128s>::new(&mut OsRng);
+        let pk = sk.verifying_key().clone();
+        Ok(Self {
+            sphincs_sk: sk.to_bytes().to_vec(),
+            sphincs_pk: pk.to_bytes().to_vec(),
+        })
     }
-    
+
     /// Get secret key bytes
     pub fn secret_bytes(&self) -> Vec<u8> {
-        use pqcrypto_traits::sign::SecretKey;
-        self.sphincs_sk.as_bytes().to_vec()
+        self.sphincs_sk.clone()
     }
-    
+
     /// Get public key bytes
     pub fn public_bytes(&self) -> Vec<u8> {
-        use pqcrypto_traits::sign::PublicKey;
-        self.sphincs_pk.as_bytes().to_vec()
+        self.sphincs_pk.clone()
     }
 }
 
-/// Post-quantum key exchange using Falcon + SPHINCS+
-/// Following QuantumHarmony's approach
+/// Post-quantum key exchange using FN-DSA (Falcon) + SLH-DSA (SPHINCS+)
+/// Pure-Rust implementations — no C FFI.
 pub struct PqKeyExchange {
-    /// SPHINCS+ for long-term identity
-    pub sphincs_sk: sphincs::SecretKey,
-    pub sphincs_pk: sphincs::PublicKey,
-    
-    /// Falcon-512 for ephemeral operations (fast)
-    pub falcon_sk: falcon512::SecretKey,
-    pub falcon_pk: falcon512::PublicKey,
+    /// SLH-DSA (SPHINCS+) for long-term identity (raw key bytes)
+    pub sphincs_sk: Vec<u8>,
+    pub sphincs_pk: Vec<u8>,
+
+    /// FN-DSA (Falcon-512) for ephemeral operations (raw key bytes)
+    pub falcon_sk: Vec<u8>,
+    pub falcon_pk: Vec<u8>,
 }
 
 impl PqKeyExchange {
@@ -78,39 +83,44 @@ impl PqKeyExchange {
             log::info!("QRNG endpoint detected - keys will use quantum entropy");
         }
 
-        // Generate keys (pqcrypto will use OS entropy, but we log QRNG availability)
-        // In future, we could modify pqcrypto to accept custom RNG
-        let (sphincs_pk, sphincs_sk) = sphincs::keypair();
-        let (falcon_pk, falcon_sk) = falcon512::keypair();
+        // Generate SLH-DSA (SPHINCS+) keypair
+        let sphincs_signing = slh_dsa::SigningKey::<Sha2_128s>::new(&mut OsRng);
+        let sphincs_verifying = sphincs_signing.verifying_key().clone();
+
+        // Generate FN-DSA (Falcon-512) keypair
+        let mut falcon_sk_buf = vec![0u8; sign_key_size(FN_DSA_LOGN_512)];
+        let mut falcon_pk_buf = vec![0u8; vrfy_key_size(FN_DSA_LOGN_512)];
+        fn_dsa::KeyPairGeneratorStandard::default()
+            .keygen(FN_DSA_LOGN_512, &mut OsRng, &mut falcon_sk_buf, &mut falcon_pk_buf);
 
         Ok(Self {
-            sphincs_sk,
-            sphincs_pk,
-            falcon_sk,
-            falcon_pk,
+            sphincs_sk: sphincs_signing.to_bytes().to_vec(),
+            sphincs_pk: sphincs_verifying.to_bytes().to_vec(),
+            falcon_sk: falcon_sk_buf,
+            falcon_pk: falcon_pk_buf,
         })
     }
-    
+
     /// Create ephemeral key share (replaces Kyber encapsulation)
     pub fn create_key_share(&self) -> Result<(Vec<u8>, Vec<u8>)> {
         // Generate ephemeral secret with best available entropy
         let mut ephemeral_secret = vec![0u8; 32];
 
-        // Check if QRNG is configured
         if std::env::var("QSSH_QRNG_ENDPOINT").is_ok() {
             log::debug!("Using QRNG-enhanced entropy for ephemeral key share");
         }
 
-        // Use best available RNG (OS entropy, potentially enhanced by hardware)
         rand::thread_rng().fill_bytes(&mut ephemeral_secret);
-        
-        // Sign with Falcon for authenticity using detached signature
-        let signature = falcon512::detached_sign(&ephemeral_secret, &self.falcon_sk);
 
-        use pqcrypto_traits::sign::DetachedSignature as DetachedSignatureTrait;
-        Ok((ephemeral_secret, signature.as_bytes().to_vec()))
+        // Sign with Falcon for authenticity (detached signature)
+        let mut sk = fn_dsa::SigningKeyStandard::decode(&self.falcon_sk)
+            .ok_or_else(|| QsshError::Crypto("Invalid Falcon secret key".into()))?;
+        let mut sig = vec![0u8; signature_size(FN_DSA_LOGN_512)];
+        sk.sign(&mut OsRng, &DOMAIN_NONE, &HASH_ID_RAW, &ephemeral_secret, &mut sig);
+
+        Ok((ephemeral_secret, sig))
     }
-    
+
     /// Verify and process peer's key share (replaces Kyber decapsulation)
     pub fn process_key_share(
         &self,
@@ -118,54 +128,27 @@ impl PqKeyExchange {
         peer_share: &[u8],
         peer_signature: &[u8],
     ) -> Result<Vec<u8>> {
-        // Safety check: Validate input sizes
-        use pqcrypto_traits::sign::PublicKey as SignPublicKeyTrait;
-        
-        // Check key share size (should be 32 bytes for our protocol)
         if peer_share.len() != 32 {
             return Err(QsshError::Crypto(format!(
                 "Invalid key share size: got {}, expected 32",
                 peer_share.len()
             )));
         }
-        
-        // Verify Falcon signature using detached signature verification
-        use pqcrypto_traits::sign::DetachedSignature;
 
-        let pk = match falcon512::PublicKey::from_bytes(peer_falcon_pk) {
-            Ok(key) => key,
-            Err(e) => {
-                log::error!("Failed to parse Falcon public key of size {}: {:?}",
-                    peer_falcon_pk.len(), e);
-                return Err(QsshError::Crypto(format!("Invalid Falcon public key: {:?}", e)));
-            }
-        };
+        let vk = fn_dsa::VerifyingKeyStandard::decode(peer_falcon_pk).ok_or_else(|| {
+            log::error!("Failed to parse Falcon public key of size {}", peer_falcon_pk.len());
+            QsshError::Crypto("Invalid Falcon public key".into())
+        })?;
 
-        // Parse as detached signature (signature only, not signed message)
-        let sig = match falcon512::DetachedSignature::from_bytes(peer_signature) {
-            Ok(signature) => signature,
-            Err(e) => {
-                log::error!("Failed to parse Falcon detached signature of size {}: {:?}",
-                    peer_signature.len(), e);
-                return Err(QsshError::Crypto(format!("Invalid Falcon signature: {:?}", e)));
-            }
-        };
-
-        // Verify the detached signature against the share data
-        match falcon512::verify_detached_signature(&sig, peer_share, &pk) {
-            Ok(_) => {
-                log::debug!("Falcon signature verified successfully");
-            }
-            Err(_) => {
-                log::error!("Falcon signature verification failed");
-                return Err(QsshError::Crypto("Invalid Falcon signature".into()));
-            }
+        if !vk.verify(peer_signature, &DOMAIN_NONE, &HASH_ID_RAW, peer_share) {
+            log::error!("Falcon signature verification failed");
+            return Err(QsshError::Crypto("Invalid Falcon signature".into()));
         }
-        
-        // Return the verified share
+
+        log::debug!("Falcon signature verified successfully");
         Ok(peer_share.to_vec())
     }
-    
+
     /// Compute shared secret from both key shares
     pub fn compute_shared_secret(
         &self,
@@ -175,11 +158,10 @@ impl PqKeyExchange {
         server_random: &[u8],
     ) -> Vec<u8> {
         use sha3::{Sha3_256, Digest};
-        
+
         let mut hasher = Sha3_256::new();
         hasher.update(b"QSSH-FALCON-v2");
-        
-        // Sort shares lexicographically to ensure both parties get same result
+
         if our_share < peer_share {
             hasher.update(our_share);
             hasher.update(peer_share);
@@ -187,66 +169,54 @@ impl PqKeyExchange {
             hasher.update(peer_share);
             hasher.update(our_share);
         }
-        
+
         hasher.update(client_random);
         hasher.update(server_random);
         hasher.finalize().to_vec()
     }
-    
-    /// Sign a message with SPHINCS+ (for identity/long-term)
+
+    /// Sign a message with SLH-DSA (SPHINCS+) for identity/long-term (detached)
     pub fn sign(&self, message: &[u8]) -> Result<Vec<u8>> {
-        let signature = sphincs::sign(message, &self.sphincs_sk);
-        use SignedMessageTrait;
-        Ok(signature.as_bytes().to_vec())
+        let sk = slh_dsa::SigningKey::<Sha2_128s>::try_from(self.sphincs_sk.as_slice())
+            .map_err(|e| QsshError::Crypto(format!("Invalid SPHINCS+ key: {}", e)))?;
+        let sig: slh_dsa::Signature<Sha2_128s> = Signer::try_sign(&sk, message)
+            .map_err(|e| QsshError::Crypto(format!("SPHINCS+ signing failed: {}", e)))?;
+        Ok(sig.to_bytes().to_vec())
     }
-    
-    /// Sign with Falcon (for ephemeral/performance)
+
+    /// Sign with FN-DSA (Falcon) for ephemeral/performance (detached)
     pub fn sign_falcon(&self, message: &[u8]) -> Result<Vec<u8>> {
-        let signature = falcon512::sign(message, &self.falcon_sk);
-        use SignedMessageTrait;
-        Ok(signature.as_bytes().to_vec())
+        let mut sk = fn_dsa::SigningKeyStandard::decode(&self.falcon_sk)
+            .ok_or_else(|| QsshError::Crypto("Invalid Falcon secret key".into()))?;
+        let mut sig = vec![0u8; signature_size(FN_DSA_LOGN_512)];
+        sk.sign(&mut OsRng, &DOMAIN_NONE, &HASH_ID_RAW, message, &mut sig);
+        Ok(sig)
     }
-    
+
     /// Get Falcon secret key bytes
     pub fn secret_bytes(&self) -> Vec<u8> {
-        use pqcrypto_traits::sign::SecretKey;
-        self.falcon_sk.as_bytes().to_vec()
+        self.falcon_sk.clone()
     }
-    
+
     /// Get Falcon public key bytes
     pub fn public_bytes(&self) -> Vec<u8> {
-        use pqcrypto_traits::sign::PublicKey;
-        self.falcon_pk.as_bytes().to_vec()
+        self.falcon_pk.clone()
     }
-    
-    /// Verify a SPHINCS+ signature
+
+    /// Verify a SLH-DSA (SPHINCS+) detached signature
     pub fn verify(&self, message: &[u8], signature: &[u8], public_key: &[u8]) -> Result<bool> {
-        let sig = sphincs::SignedMessage::from_bytes(signature)
-            .map_err(|e| QsshError::Crypto(format!("Invalid signature: {:?}", e)))?;
-        
-        let pk = sphincs::PublicKey::from_bytes(public_key)
-            .map_err(|e| QsshError::Crypto(format!("Invalid public key: {:?}", e)))?;
-        
-        match sphincs::open(&sig, &pk) {
-            Ok(msg) => Ok(msg == message),
-            Err(_) => Ok(false)
-        }
+        let pk = slh_dsa::VerifyingKey::<Sha2_128s>::try_from(public_key)
+            .map_err(|e| QsshError::Crypto(format!("Invalid SPHINCS+ public key: {}", e)))?;
+        let sig = slh_dsa::Signature::<Sha2_128s>::try_from(signature)
+            .map_err(|e| QsshError::Crypto(format!("Invalid SPHINCS+ signature: {}", e)))?;
+        Ok(Verifier::verify(&pk, message, &sig).is_ok())
     }
-    
-    /// Verify a Falcon signature
+
+    /// Verify a FN-DSA (Falcon) detached signature
     pub fn verify_falcon(&self, message: &[u8], signature: &[u8], public_key: &[u8]) -> Result<bool> {
-        use pqcrypto_traits::sign::{PublicKey as PubKey, DetachedSignature};
-
-        let sig = falcon512::DetachedSignature::from_bytes(signature)
-            .map_err(|e| QsshError::Crypto(format!("Invalid Falcon signature: {:?}", e)))?;
-
-        let pk = falcon512::PublicKey::from_bytes(public_key)
-            .map_err(|e| QsshError::Crypto(format!("Invalid Falcon public key: {:?}", e)))?;
-
-        match falcon512::verify_detached_signature(&sig, message, &pk) {
-            Ok(_) => Ok(true),
-            Err(_) => Ok(false)
-        }
+        let vk = fn_dsa::VerifyingKeyStandard::decode(public_key)
+            .ok_or_else(|| QsshError::Crypto("Invalid Falcon public key".into()))?;
+        Ok(vk.verify(signature, &DOMAIN_NONE, &HASH_ID_RAW, message))
     }
 
     /// Serialize all keys to bytes (for host key persistence).
@@ -254,24 +224,17 @@ impl PqKeyExchange {
     /// Format: `[MAGIC(4)][VERSION(1)][sphincs_sk_len(4)][sphincs_sk][sphincs_pk_len(4)][sphincs_pk]
     ///          [falcon_sk_len(4)][falcon_sk][falcon_pk_len(4)][falcon_pk]`
     pub fn to_bytes(&self) -> Vec<u8> {
-        use pqcrypto_traits::sign::{SecretKey, PublicKey};
-
-        let sphincs_sk = self.sphincs_sk.as_bytes();
-        let sphincs_pk = self.sphincs_pk.as_bytes();
-        let falcon_sk = self.falcon_sk.as_bytes();
-        let falcon_pk = self.falcon_pk.as_bytes();
-
         let mut buf = Vec::new();
         buf.extend_from_slice(b"QSSH");           // magic
         buf.push(1u8);                              // version
-        buf.extend_from_slice(&(sphincs_sk.len() as u32).to_be_bytes());
-        buf.extend_from_slice(sphincs_sk);
-        buf.extend_from_slice(&(sphincs_pk.len() as u32).to_be_bytes());
-        buf.extend_from_slice(sphincs_pk);
-        buf.extend_from_slice(&(falcon_sk.len() as u32).to_be_bytes());
-        buf.extend_from_slice(falcon_sk);
-        buf.extend_from_slice(&(falcon_pk.len() as u32).to_be_bytes());
-        buf.extend_from_slice(falcon_pk);
+        buf.extend_from_slice(&(self.sphincs_sk.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&self.sphincs_sk);
+        buf.extend_from_slice(&(self.sphincs_pk.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&self.sphincs_pk);
+        buf.extend_from_slice(&(self.falcon_sk.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&self.falcon_sk);
+        buf.extend_from_slice(&(self.falcon_pk.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&self.falcon_pk);
         buf
     }
 
@@ -302,21 +265,16 @@ impl PqKeyExchange {
             Ok(field)
         };
 
-        let sphincs_sk_bytes = read_field(&mut pos, "sphincs_sk")?;
-        let sphincs_pk_bytes = read_field(&mut pos, "sphincs_pk")?;
-        let falcon_sk_bytes = read_field(&mut pos, "falcon_sk")?;
-        let falcon_pk_bytes = read_field(&mut pos, "falcon_pk")?;
+        let sphincs_sk = read_field(&mut pos, "sphincs_sk")?;
+        let sphincs_pk = read_field(&mut pos, "sphincs_pk")?;
+        let falcon_sk = read_field(&mut pos, "falcon_sk")?;
+        let falcon_pk = read_field(&mut pos, "falcon_pk")?;
 
-        use pqcrypto_traits::sign::{SecretKey as SecretKeyTrait, PublicKey as PublicKeyTrait};
-
-        let sphincs_sk = <sphincs::SecretKey as SecretKeyTrait>::from_bytes(&sphincs_sk_bytes)
-            .map_err(|e| QsshError::Crypto(format!("Invalid SPHINCS+ secret key: {:?}", e)))?;
-        let sphincs_pk = <sphincs::PublicKey as PublicKeyTrait>::from_bytes(&sphincs_pk_bytes)
-            .map_err(|e| QsshError::Crypto(format!("Invalid SPHINCS+ public key: {:?}", e)))?;
-        let falcon_sk = <falcon512::SecretKey as SecretKeyTrait>::from_bytes(&falcon_sk_bytes)
-            .map_err(|e| QsshError::Crypto(format!("Invalid Falcon secret key: {:?}", e)))?;
-        let falcon_pk = <falcon512::PublicKey as PublicKeyTrait>::from_bytes(&falcon_pk_bytes)
-            .map_err(|e| QsshError::Crypto(format!("Invalid Falcon public key: {:?}", e)))?;
+        // Validate keys can be decoded
+        slh_dsa::VerifyingKey::<Sha2_128s>::try_from(sphincs_pk.as_slice())
+            .map_err(|e| QsshError::Crypto(format!("Invalid SPHINCS+ public key: {}", e)))?;
+        fn_dsa::VerifyingKeyStandard::decode(&falcon_pk)
+            .ok_or_else(|| QsshError::Crypto("Invalid Falcon public key".into()))?;
 
         Ok(Self { sphincs_sk, sphincs_pk, falcon_sk, falcon_pk })
     }
@@ -365,74 +323,67 @@ impl SymmetricCrypto {
 mod tests {
     use super::*;
     
-    /// Falcon key agreement test — disabled on macOS due to pqcrypto-falcon
-    /// segfault in the Falcon-512 FFT sampling code. Works correctly on Linux.
-    /// See: https://github.com/pqclean/pqclean/issues — macOS ARM64 stack alignment issue.
+    /// FN-DSA (Falcon) key agreement test — pure Rust, works on all platforms.
     #[test]
-    #[cfg(not(target_os = "macos"))]
     fn test_falcon_key_agreement() {
         let alice = PqKeyExchange::new().unwrap();
         let bob = PqKeyExchange::new().unwrap();
-        
+
         // Alice creates key share
         let (alice_share, alice_sig) = alice.create_key_share().unwrap();
-        
+
         // Bob verifies and creates his share
         let verified_alice_share = bob.process_key_share(
-            alice.falcon_pk.as_bytes(),
+            &alice.falcon_pk,
             &alice_share,
             &alice_sig
         ).unwrap();
         assert_eq!(alice_share, verified_alice_share);
-        
+
         let (bob_share, bob_sig) = bob.create_key_share().unwrap();
-        
+
         // Alice verifies Bob's share
         let verified_bob_share = alice.process_key_share(
-            bob.falcon_pk.as_bytes(),
+            &bob.falcon_pk,
             &bob_share,
             &bob_sig
         ).unwrap();
         assert_eq!(bob_share, verified_bob_share);
-        
+
         // Both compute shared secret
         let client_random = vec![0x11; 32];
         let server_random = vec![0x22; 32];
-        
+
         let alice_secret = alice.compute_shared_secret(
             &alice_share,
             &bob_share,
             &client_random,
             &server_random
         );
-        
+
         let bob_secret = bob.compute_shared_secret(
             &bob_share,
             &alice_share,
             &client_random,
             &server_random
         );
-        
-        // Secrets should match
+
         assert_eq!(alice_secret, bob_secret);
     }
-    
-    /// Falcon signature test — disabled on macOS due to pqcrypto-falcon segfault.
+
+    /// FN-DSA (Falcon) signature test — pure Rust, works on all platforms.
     #[test]
-    #[cfg(not(target_os = "macos"))]
     fn test_falcon_signatures() {
         let signer = PqKeyExchange::new().unwrap();
         let message = b"Test message for Falcon";
-        
+
         let signature = signer.sign_falcon(message).unwrap();
-        let valid = signer.verify_falcon(message, &signature, signer.falcon_pk.as_bytes()).unwrap();
-        
+        let valid = signer.verify_falcon(message, &signature, &signer.falcon_pk).unwrap();
         assert!(valid);
-        
+
         // Wrong message should fail
         let wrong_message = b"Wrong message";
-        let invalid = signer.verify_falcon(wrong_message, &signature, signer.falcon_pk.as_bytes()).unwrap();
-        
+        let invalid = signer.verify_falcon(wrong_message, &signature, &signer.falcon_pk).unwrap();
         assert!(!invalid);
     }
     
@@ -449,23 +400,14 @@ mod tests {
         assert_eq!(plaintext, &decrypted[..]);
     }
 
-    /// Verify that Falcon tests are correctly gated per platform.
-    /// On macOS this confirms the tests are excluded; on Linux it confirms they run.
+    /// Verify PqKeyExchange works on all platforms (pure Rust, no C FFI).
     #[test]
-    fn test_falcon_platform_gate() {
-        if cfg!(target_os = "macos") {
-            // On macOS, Falcon FFI segfaults — tests should be gated out.
-            // This test simply documents the expectation.
-            assert!(
-                cfg!(target_os = "macos"),
-                "Falcon tests should be disabled on macOS via cfg gate"
-            );
-        } else {
-            // On Linux/other platforms, the Falcon tests should compile and run.
-            // Verify we can at least instantiate PqKeyExchange (Falcon keygen).
-            let kex = PqKeyExchange::new();
-            assert!(kex.is_ok(), "PqKeyExchange::new() should succeed on non-macOS");
-        }
+    fn test_keygen_all_platforms() {
+        let kex = PqKeyExchange::new();
+        assert!(kex.is_ok(), "PqKeyExchange::new() should succeed on all platforms");
+        let kex = kex.unwrap();
+        assert_eq!(kex.falcon_pk.len(), vrfy_key_size(FN_DSA_LOGN_512));
+        assert_eq!(kex.falcon_sk.len(), sign_key_size(FN_DSA_LOGN_512));
     }
 
     #[test]
@@ -495,10 +437,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
     fn test_host_key_roundtrip() {
-        use pqcrypto_traits::sign::{SecretKey, PublicKey};
-
         let original = PqKeyExchange::new().unwrap();
         let bytes = original.to_bytes();
 
@@ -510,15 +449,15 @@ mod tests {
         let loaded = PqKeyExchange::from_bytes(&bytes).unwrap();
 
         // Verify all keys match
-        assert_eq!(original.sphincs_sk.as_bytes(), loaded.sphincs_sk.as_bytes());
-        assert_eq!(original.sphincs_pk.as_bytes(), loaded.sphincs_pk.as_bytes());
-        assert_eq!(original.falcon_sk.as_bytes(), loaded.falcon_sk.as_bytes());
-        assert_eq!(original.falcon_pk.as_bytes(), loaded.falcon_pk.as_bytes());
+        assert_eq!(original.sphincs_sk, loaded.sphincs_sk);
+        assert_eq!(original.sphincs_pk, loaded.sphincs_pk);
+        assert_eq!(original.falcon_sk, loaded.falcon_sk);
+        assert_eq!(original.falcon_pk, loaded.falcon_pk);
 
         // Verify the loaded key can sign and verify
         let msg = b"test message";
         let sig = loaded.sign_falcon(msg).unwrap();
-        let valid = loaded.verify_falcon(msg, &sig, loaded.falcon_pk.as_bytes()).unwrap();
+        let valid = loaded.verify_falcon(msg, &sig, &loaded.falcon_pk).unwrap();
         assert!(valid);
     }
 

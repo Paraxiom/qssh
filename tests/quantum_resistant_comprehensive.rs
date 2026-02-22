@@ -1,6 +1,5 @@
 //! Comprehensive test suite for quantum-resistant protocol
 //!
-//! NOTE: Several tests ignored due to pqcrypto segfault on macOS
 
 use qssh::crypto::quantum_kem::QuantumKem;
 use qssh::transport::quantum_resistant::QUANTUM_FRAME_SIZE;
@@ -30,7 +29,6 @@ fn test_frame_indistinguishability_comprehensive() {
 
 /// Test 2: Quantum KEM security properties
 #[tokio::test]
-#[ignore]
 async fn test_quantum_kem_security_properties() {
     println!("🔒 Testing quantum KEM security properties...");
 
@@ -90,7 +88,6 @@ async fn test_traffic_analysis_resistance() {
 
 /// Test 4: Timing attack resistance
 #[tokio::test]
-#[ignore]
 async fn test_timing_attack_resistance() {
     println!("⏱️ Testing timing attack resistance...");
 
@@ -127,7 +124,6 @@ async fn test_timing_attack_resistance() {
 
 /// Test 5: Defense against replay attacks
 #[tokio::test]
-#[ignore]
 async fn test_replay_attack_defense() {
     println!("🔄 Testing replay attack defense...");
 
@@ -159,7 +155,6 @@ async fn test_replay_attack_defense() {
 
 /// Test 6: Multiple algorithm defense (SPHINCS+ + Falcon)
 #[test]
-#[ignore]
 fn test_multiple_algorithm_defense() {
     println!("🛡️ Testing multiple algorithm defense...");
 
@@ -179,7 +174,6 @@ fn test_multiple_algorithm_defense() {
 
 /// Test 7: Protocol evolution test - v1.0 vs v2.0
 #[test]
-#[ignore]
 fn test_protocol_evolution() {
     println!("🔄 Testing protocol evolution (v1.0 → v2.0)...");
 
@@ -248,7 +242,6 @@ fn test_future_proofing() {
 
 /// Test 10: Comprehensive security verification
 #[tokio::test]
-#[ignore]
 async fn test_comprehensive_security_verification() {
     println!("🔐 Running comprehensive security verification...");
 
@@ -287,7 +280,6 @@ async fn test_comprehensive_security_verification() {
 
 /// Summary test - verify all quantum-native properties
 #[test]
-#[ignore]
 fn test_quantum_native_summary() {
     println!("\n🎯 QUANTUM-NATIVE PROTOCOL VERIFICATION SUMMARY");
     println!("================================================");

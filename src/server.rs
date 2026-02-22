@@ -11,7 +11,6 @@ use crate::{
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use pqcrypto_traits::sign::PublicKey as _;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
@@ -314,7 +313,7 @@ async fn handle_rekey(
 
     // 4. Send server's rekey response (before switching keys!)
     let server_rekey = RekeyMessage {
-        new_falcon_public_key: server_kex.falcon_pk.as_bytes().to_vec(),
+        new_falcon_public_key: server_kex.falcon_pk.clone(),
         new_key_share: server_share,
         new_key_share_signature: server_sig,
         request_qkd: false,
@@ -978,9 +977,7 @@ async fn handle_exec_request(
 mod tests {
     use super::*;
     
-    /// NOTE: Ignored due to pqcrypto segfault on macOS during key generation
     #[tokio::test]
-    #[ignore]
     async fn test_server_config() {
         let config = QsshServerConfig::new("127.0.0.1:22222").expect("Failed to create server config");
         assert_eq!(config.listen_addr, "127.0.0.1:22222");

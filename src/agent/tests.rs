@@ -6,6 +6,8 @@ mod tests {
     use super::super::*;
     use tempfile::TempDir;
     use tokio::time::{timeout, Duration};
+    use fn_dsa::KeyPairGenerator as _;
+    use signature::Keypair as _;
 
     /// Test agent creation and initialization
     #[tokio::test]
@@ -348,9 +350,7 @@ mod tests {
     }
 
     /// Test SPHINCS+ key operations
-    /// NOTE: Ignored due to pqcrypto segfault on macOS (works on Linux)
     #[tokio::test]
-    #[ignore]
     async fn test_sphincs_keys() {
         let temp_dir = TempDir::new().unwrap();
         let socket_path = temp_dir.path().join("test.sock");
@@ -377,17 +377,17 @@ mod tests {
 
     // Helper functions for testing
     fn generate_test_falcon_keys() -> (Vec<u8>, Vec<u8>) {
-        use pqcrypto_falcon::falcon512;
-        use pqcrypto_traits::sign::{SecretKey as SecretKeyTrait, PublicKey as PublicKeyTrait};
-        let (pk, sk) = falcon512::keypair();
-        (sk.as_bytes().to_vec(), pk.as_bytes().to_vec())
+        let mut sk = vec![0u8; fn_dsa::sign_key_size(fn_dsa::FN_DSA_LOGN_512)];
+        let mut pk = vec![0u8; fn_dsa::vrfy_key_size(fn_dsa::FN_DSA_LOGN_512)];
+        fn_dsa::KeyPairGeneratorStandard::default()
+            .keygen(fn_dsa::FN_DSA_LOGN_512, &mut aes_gcm::aead::OsRng, &mut sk, &mut pk);
+        (sk, pk)
     }
 
     fn generate_test_sphincs_keys() -> (Vec<u8>, Vec<u8>) {
-        use pqcrypto_sphincsplus::sphincssha256128ssimple as sphincs;
-        use pqcrypto_traits::sign::{SecretKey as SecretKeyTrait, PublicKey as PublicKeyTrait};
-        let (pk, sk) = sphincs::keypair();
-        (sk.as_bytes().to_vec(), pk.as_bytes().to_vec())
+        let sk = slh_dsa::SigningKey::<slh_dsa::Sha2_128s>::new(&mut aes_gcm::aead::OsRng);
+        let pk = sk.verifying_key().clone();
+        (sk.to_bytes().to_vec(), pk.to_bytes().to_vec())
     }
 
     fn generate_fingerprint(public_key: &[u8]) -> String {

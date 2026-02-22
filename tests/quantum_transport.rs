@@ -1,6 +1,5 @@
 //! Integration test for quantum-native transport
 //!
-//! NOTE: Some tests ignored due to pqcrypto segfault on macOS
 
 use qssh::crypto::quantum_kem::QuantumKem;
 use qssh::transport::quantum_resistant::{QuantumTransport, QuantumFrameType, QUANTUM_FRAME_SIZE};
@@ -16,7 +15,6 @@ async fn test_quantum_frame_indistinguishability() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_quantum_transport_handshake() {
     // Start a local server for testing
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -80,7 +78,6 @@ async fn test_quantum_frame_types() {
 }
 
 #[test]
-#[ignore]
 fn test_quantum_security_properties() {
     // This test verifies that our quantum-native approach addresses key vulnerabilities
 
@@ -105,7 +102,6 @@ fn test_quantum_security_properties() {
 }
 
 #[test]
-#[ignore]
 fn test_defense_against_quantum_attacks() {
     // Test that we address specific quantum attack vectors
 

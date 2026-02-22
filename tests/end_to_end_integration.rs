@@ -6,9 +6,7 @@ use qssh::server::{QsshServer, QsshServerConfig};
 use tokio::time::{timeout, Duration};
 
 /// Test 1: Basic quantum-native client-server handshake
-/// NOTE: Ignored due to pqcrypto segfault on macOS during server initialization
 #[tokio::test]
-#[ignore]
 async fn test_quantum_native_handshake() {
     println!("🔗 Testing quantum-native client-server handshake...");
 
@@ -31,7 +29,6 @@ async fn test_quantum_native_handshake() {
     assert!(!server_handle.is_finished(), "Server should still be running");
 
     // Abort the server task — full client handshake requires the pqcrypto
-    // Falcon FFI which segfaults on macOS. On Linux CI this test is not ignored.
     server_handle.abort();
 
     println!("   ✓ Server configuration created");
@@ -140,9 +137,7 @@ async fn test_large_data_transfer() {
 }
 
 /// Test 4: Security audit of KEM implementation
-/// NOTE: Ignored due to pqcrypto segfault on macOS
 #[test]
-#[ignore]
 fn test_kem_security_audit() {
     println!("🔒 Security audit of KEM implementation...");
 
@@ -260,9 +255,7 @@ fn test_protocol_version_compatibility() {
 }
 
 /// Test 7: Error handling and edge cases
-/// NOTE: Ignored due to pqcrypto segfault on macOS
 #[tokio::test]
-#[ignore]
 async fn test_error_handling() {
     println!("🚨 Testing error handling and edge cases...");
 
@@ -295,9 +288,7 @@ async fn test_error_handling() {
 }
 
 /// Test 8: Memory safety and resource management
-/// NOTE: Ignored due to pqcrypto segfault on macOS
 #[test]
-#[ignore]
 fn test_memory_safety() {
     println!("🧠 Testing memory safety and resource management...");
 
@@ -322,9 +313,7 @@ fn test_memory_safety() {
 }
 
 /// Test 9: Concurrency and thread safety
-/// NOTE: Ignored due to pqcrypto segfault on macOS
 #[tokio::test]
-#[ignore]
 async fn test_concurrency() {
     println!("🧵 Testing concurrency and thread safety...");
 

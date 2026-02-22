@@ -71,17 +71,16 @@ impl P2pSession {
         
         // Generate peer ID from public key
         use sha3::{Sha3_256, Digest};
-        use pqcrypto_traits::sign::PublicKey;
-        
+
         let mut hasher = Sha3_256::new();
-        hasher.update(keypair.falcon_pk.as_bytes());
+        hasher.update(&keypair.falcon_pk);
         let id = hex::encode(&hasher.finalize()[..16]);
-        
+
         let our_info = PeerInfo {
             id,
             name,
             addresses: Self::discover_addresses().await?,
-            public_key: keypair.falcon_pk.as_bytes().to_vec(),
+            public_key: keypair.falcon_pk.clone(),
             algorithms: vec![PqAlgorithm::Falcon512, PqAlgorithm::SphincsPlus],
             last_seen: chrono::Utc::now().timestamp(),
         };

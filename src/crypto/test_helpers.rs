@@ -1,7 +1,6 @@
-//! Test helpers that avoid segfaults
+//! Test helpers for PQ crypto operations
 //!
-//! NOTE: This module is currently non-functional due to API changes in pqcrypto.
-//! The PqKeyExchange::new() function should be used instead for testing.
+//! Now using pure-Rust fn-dsa + slh-dsa — no segfault risk.
 
 #[cfg(test)]
 pub mod test_support {

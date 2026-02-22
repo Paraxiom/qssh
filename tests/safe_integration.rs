@@ -2,14 +2,12 @@
 //!
 //! Focus on testing without complex async server setup
 //!
-//! NOTE: Several tests ignored due to pqcrypto segfault on macOS
 
 use qssh::crypto::quantum_kem::QuantumKem;
 use qssh::transport::quantum_resistant::QUANTUM_FRAME_SIZE;
 
 /// Test basic KEM functionality thoroughly
 #[test]
-#[ignore]
 fn test_kem_robustness() {
     println!("🔍 Testing KEM robustness...");
 
@@ -64,7 +62,6 @@ fn test_frame_size_claims() {
 
 /// Test error conditions safely
 #[test]
-#[ignore]
 fn test_error_conditions() {
     println!("⚠️  Testing error conditions...");
 
@@ -99,7 +96,6 @@ fn test_error_conditions() {
 
 /// Performance baseline test
 #[test]
-#[ignore]
 fn test_performance_baseline() {
     println!("⏱️  Measuring performance baseline...");
 
@@ -130,7 +126,6 @@ fn test_performance_baseline() {
 
 /// Test uniqueness properties
 #[test]
-#[ignore]
 fn test_uniqueness() {
     println!("🔄 Testing uniqueness properties...");
 
@@ -165,7 +160,6 @@ fn test_uniqueness() {
 
 /// Test algorithm properties
 #[test]
-#[ignore]
 fn test_algorithm_properties() {
     println!("🧮 Testing algorithm properties...");
 
@@ -193,7 +187,6 @@ fn test_algorithm_properties() {
 
 /// Test what we fixed from v1.0
 #[test]
-#[ignore]
 fn test_v1_vs_v2_improvements() {
     println!("🔧 Testing v1.0 vs v2.0 improvements...");
 
@@ -262,7 +255,6 @@ fn test_commit_assessment() {
 
 // Additional micro-tests for specific edge cases
 #[test]
-#[ignore]
 fn test_key_size_constants() {
     let kem = QuantumKem::new().unwrap();
     let (sphincs, falcon) = kem.public_keys();

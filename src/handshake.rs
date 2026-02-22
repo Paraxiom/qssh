@@ -1,5 +1,6 @@
 //! QSSH handshake implementation
 
+use fn_dsa::SigningKey as FnSigningKeyTrait;
 use crate::{
     Result, QsshError, QsshConfig, PqAlgorithm, KexAlgorithm,
     crypto::{PqKeyExchange, SymmetricCrypto, SessionKeyDerivation},
@@ -12,7 +13,6 @@ use crate::{
 use crate::crypto::hybrid::{HybridKeyPair, HybridClientExchange};
 #[cfg(feature = "qkd")]
 use crate::qkd::QkdClient;
-use pqcrypto_traits::sign::{PublicKey as SignPublicKeyTrait, SecretKey as SignSecretKeyTrait};
 use tokio::net::TcpStream;
 use rand::{thread_rng, RngCore};
 
@@ -318,15 +318,12 @@ impl<'a> ClientHandshake<'a> {
             // Use public key authentication
             log::info!("Using identity Falcon key for authentication");
 
-            // Parse the Falcon secret key
-            use pqcrypto_falcon::falcon512;
-            let sk = falcon512::SecretKey::from_bytes(priv_key)
-                .map_err(|e| QsshError::Crypto(format!("Invalid identity key: {:?}", e)))?;
-
-            // Sign the session ID with detached signature (signature only, not signed message)
-            use pqcrypto_traits::sign::DetachedSignature;
-            let sig = falcon512::detached_sign(&session_id, &sk);
-            let signature = sig.as_bytes().to_vec();
+            // Parse the Falcon secret key and sign the session ID
+            let mut sk = fn_dsa::SigningKeyStandard::decode(priv_key)
+                .ok_or_else(|| QsshError::Crypto("Invalid identity key".into()))?;
+            let mut signature = vec![0u8; fn_dsa::signature_size(fn_dsa::FN_DSA_LOGN_512)];
+            sk.sign(&mut aes_gcm::aead::OsRng, &fn_dsa::DOMAIN_NONE, &fn_dsa::HASH_ID_RAW,
+                     &session_id, &mut signature);
 
             log::debug!("Session ID signed: {} bytes", signature.len());
 
@@ -359,7 +356,7 @@ impl<'a> ClientHandshake<'a> {
             log::info!("Using ephemeral Falcon key for authentication");
 
             let signature = pq_kex.sign_falcon(&session_id)?;
-            let public_key = pq_kex.falcon_pk.as_bytes().to_vec();
+            let public_key = pq_kex.falcon_pk.clone();
 
             AuthMessage {
                 username: self.config.username.clone(),
@@ -458,16 +455,10 @@ impl<'a> ClientHandshake<'a> {
         );
 
         let key_exchange = KeyExchangeMessage {
-            falcon_public_key: {
-                use SignPublicKeyTrait;
-                pq_kex.falcon_pk.as_bytes().to_vec()
-            },
+            falcon_public_key: pq_kex.falcon_pk.clone(),
             key_share: our_share,
             key_share_signature: our_signature,
-            sphincs_public_key: {
-                use SignPublicKeyTrait;
-                pq_kex.sphincs_pk.as_bytes().to_vec()
-            },
+            sphincs_public_key: pq_kex.sphincs_pk.clone(),
             mlkem_ciphertext: None,
             x25519_public_key: None,
             qkd_proof: None,
@@ -497,16 +488,10 @@ impl<'a> ClientHandshake<'a> {
         let pq_kex = PqKeyExchange::new()?;
 
         let key_exchange = KeyExchangeMessage {
-            falcon_public_key: {
-                use SignPublicKeyTrait;
-                pq_kex.falcon_pk.as_bytes().to_vec()
-            },
+            falcon_public_key: pq_kex.falcon_pk.clone(),
             key_share: Vec::new(),
             key_share_signature: Vec::new(),
-            sphincs_public_key: {
-                use SignPublicKeyTrait;
-                pq_kex.sphincs_pk.as_bytes().to_vec()
-            },
+            sphincs_public_key: pq_kex.sphincs_pk.clone(),
             mlkem_ciphertext: Some(mlkem_ciphertext),
             x25519_public_key: None,
             qkd_proof: None,
@@ -537,16 +522,10 @@ impl<'a> ClientHandshake<'a> {
         let pq_kex = PqKeyExchange::new()?;
 
         let key_exchange = KeyExchangeMessage {
-            falcon_public_key: {
-                use SignPublicKeyTrait;
-                pq_kex.falcon_pk.as_bytes().to_vec()
-            },
+            falcon_public_key: pq_kex.falcon_pk.clone(),
             key_share: Vec::new(),
             key_share_signature: Vec::new(),
-            sphincs_public_key: {
-                use SignPublicKeyTrait;
-                pq_kex.sphincs_pk.as_bytes().to_vec()
-            },
+            sphincs_public_key: pq_kex.sphincs_pk.clone(),
             mlkem_ciphertext: Some(mlkem_ciphertext),
             x25519_public_key: None,
             qkd_proof: None,
@@ -581,16 +560,10 @@ impl<'a> ClientHandshake<'a> {
         let pq_kex = PqKeyExchange::new()?;
 
         let key_exchange = KeyExchangeMessage {
-            falcon_public_key: {
-                use SignPublicKeyTrait;
-                pq_kex.falcon_pk.as_bytes().to_vec()
-            },
+            falcon_public_key: pq_kex.falcon_pk.clone(),
             key_share: Vec::new(),
             key_share_signature: Vec::new(),
-            sphincs_public_key: {
-                use SignPublicKeyTrait;
-                pq_kex.sphincs_pk.as_bytes().to_vec()
-            },
+            sphincs_public_key: pq_kex.sphincs_pk.clone(),
             mlkem_ciphertext: Some(mlkem_ciphertext),
             x25519_public_key: Some(client_exchange.x25519_public_key().to_vec()),
             qkd_proof: None,
@@ -859,10 +832,7 @@ impl ServerHandshake {
                     selected_kex: KexAlgorithm::FalconSignedShares,
                     selected_sig: PqAlgorithm::SphincsPlus,
                     selected_cipher: "aes256-gcm".to_string(),
-                    falcon_public_key: {
-                        use SignPublicKeyTrait;
-                        server_pq_kex.falcon_pk.as_bytes().to_vec()
-                    },
+                    falcon_public_key: server_pq_kex.falcon_pk.clone(),
                     key_share: server_share.clone(),
                     key_share_signature: server_signature,
                     mlkem_encapsulation_key: None,
@@ -882,10 +852,7 @@ impl ServerHandshake {
                     selected_kex: KexAlgorithm::MlKem768,
                     selected_sig: PqAlgorithm::SphincsPlus,
                     selected_cipher: "aes256-gcm".to_string(),
-                    falcon_public_key: {
-                        use SignPublicKeyTrait;
-                        server_pq_kex.falcon_pk.as_bytes().to_vec()
-                    },
+                    falcon_public_key: server_pq_kex.falcon_pk.clone(),
                     key_share: Vec::new(),
                     key_share_signature: Vec::new(),
                     mlkem_encapsulation_key: Some(mlkem_keypair.encapsulation_key().to_vec()),
@@ -905,10 +872,7 @@ impl ServerHandshake {
                     selected_kex: KexAlgorithm::MlKem1024,
                     selected_sig: PqAlgorithm::SphincsPlus,
                     selected_cipher: "aes256-gcm".to_string(),
-                    falcon_public_key: {
-                        use SignPublicKeyTrait;
-                        server_pq_kex.falcon_pk.as_bytes().to_vec()
-                    },
+                    falcon_public_key: server_pq_kex.falcon_pk.clone(),
                     key_share: Vec::new(),
                     key_share_signature: Vec::new(),
                     mlkem_encapsulation_key: Some(mlkem_keypair.encapsulation_key().to_vec()),
@@ -929,10 +893,7 @@ impl ServerHandshake {
                     selected_kex: KexAlgorithm::HybridX25519MlKem768,
                     selected_sig: PqAlgorithm::SphincsPlus,
                     selected_cipher: "aes256-gcm".to_string(),
-                    falcon_public_key: {
-                        use SignPublicKeyTrait;
-                        server_pq_kex.falcon_pk.as_bytes().to_vec()
-                    },
+                    falcon_public_key: server_pq_kex.falcon_pk.clone(),
                     key_share: Vec::new(),
                     key_share_signature: Vec::new(),
                     mlkem_encapsulation_key: Some(hybrid_keypair.mlkem_encapsulation_key().to_vec()),
