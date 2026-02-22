@@ -1,11 +1,13 @@
 //! QSSH Client - Quantum-secure SSH replacement
 
 use clap::Parser;
-use qssh::{QsshConfig, PqAlgorithm, QsshClient, security_tiers::SecurityTier};
+use qssh::{QsshConfig, PqAlgorithm, QsshClient, ReconnectConfig, security_tiers::SecurityTier};
 use qssh::config::ConfigParser;
 use qssh::port_forward::PortForwardManager;
+use qssh::multiplex::{ControlMaster, ControlClient};
 use log::info;
 use std::process;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
@@ -83,6 +85,20 @@ struct Args {
     /// Use classical transport (for compatibility)
     #[clap(long)]
     classical: bool,
+
+    /// Auto-reconnect on disconnect (exponential backoff)
+    #[clap(long)]
+    persistent: bool,
+
+    /// Maximum reconnection attempts (0 = infinite, default 10)
+    #[clap(long, default_value = "10")]
+    max_retries: u32,
+
+    /// Control socket path for connection multiplexing (like ssh -S)
+    /// If a master is already running, new sessions reuse its connection.
+    /// Otherwise, this process becomes the master.
+    #[clap(short = 'S', long = "ctl-path")]
+    ctl_path: Option<String>,
 }
 
 #[tokio::main]
@@ -247,100 +263,189 @@ async fn main() {
     }
 
     let has_remote_forwards = !remote_forwards.is_empty();
+    let has_forwards = !local_forwards.is_empty() || !remote_forwards.is_empty() || !dynamic_forwards.is_empty();
 
-    // Create client and connect
-    let mut client = QsshClient::new(config);
+    // ──── Multiplexing: -S <socket_path> ────
+    // If a control master is already running, connect as a client (reuse existing PQ tunnel).
+    // Otherwise fall through to normal connect and optionally become the master.
+    if let Some(ref ctl_path_str) = args.ctl_path {
+        let ctl_path = expand_tilde(ctl_path_str);
+        if ControlMaster::check_master(&ctl_path).await {
+            info!("Reusing existing connection via control master at {:?}", ctl_path);
 
-    match client.connect().await {
-        Ok(()) => {
-            info!("Connected successfully!");
-
-            // Set up port forwards (-L and -R) via PortForwardManager
-            let has_forwards = !local_forwards.is_empty() || !remote_forwards.is_empty() || !dynamic_forwards.is_empty();
-            if has_forwards {
-                if let Some(transport) = client.transport() {
-                    let transport = Arc::new(transport.clone());
-                    let mut pfm = PortForwardManager::new(transport);
-                    for fwd in local_forwards {
-                        pfm.add_forward(fwd);
-                    }
-                    for fwd in remote_forwards {
-                        pfm.add_forward(fwd);
-                    }
-                    for fwd in dynamic_forwards {
-                        pfm.add_forward(fwd);
-                    }
-                    match pfm.start_all().await {
-                        Ok(()) => {
-                            info!("Port forwards established");
-                            // Share the registry and router with the client for message dispatch
-                            client.set_remote_forward_state(
-                                pfm.remote_registry(),
-                                pfm.channel_router(),
-                            );
+            let mut mux_client = ControlClient::new(ctl_path);
+            match mux_client.connect().await {
+                Ok(()) => {
+                    match mux_client.new_session(args.command.clone()).await {
+                        Ok(session_id) => {
+                            info!("Multiplexed session {} created", session_id);
+                            // For exec mode: read output from session
+                            // For shell mode: the session runs in the master, we just wait
+                            eprintln!("Session {} active on existing connection. Press Ctrl+C to close.", session_id);
+                            tokio::signal::ctrl_c().await.ok();
+                            let _ = mux_client.close_session(session_id).await;
                         }
                         Err(e) => {
-                            eprintln!("Error setting up port forwards: {}", e);
+                            eprintln!("Failed to create multiplexed session: {}", e);
                             process::exit(1);
                         }
                     }
                 }
-            }
-
-            // Enable X11 forwarding if requested
-            if args.x11 || args.trusted_x11 {
-                match client.enable_x11(args.trusted_x11).await {
-                    Ok(()) => {
-                        info!("X11 forwarding enabled");
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: Failed to enable X11 forwarding: {}", e);
-                    }
+                Err(e) => {
+                    eprintln!("Failed to connect to control master: {}", e);
+                    process::exit(1);
                 }
             }
-
-            // Execute command or start shell
-            if let Some(command) = args.command {
-                match client.exec(&command).await {
-                    Ok(output) => {
-                        print!("{}", output);
-                    }
-                    Err(e) => {
-                        eprintln!("Command execution failed: {}", e);
-                        process::exit(1);
-                    }
-                }
-
-                // If forwards are active, keep connection alive for port forwarding
-                if has_remote_forwards || has_forwards {
-                    info!("Exec completed, keeping connection alive for port forwards");
-                    info!("Press Ctrl+C to disconnect");
-                    if let Err(e) = client.run_forward_loop().await {
-                        log::debug!("Forward loop ended: {}", e);
-                    }
-                }
-            } else {
-                // Interactive shell
-                match client.shell().await {
-                    Ok(_) => {
-                        info!("Shell session terminated normally");
-                    }
-                    Err(e) => {
-                        eprintln!("Shell error: {}", e);
-                        eprintln!("Error details: {:?}", e);
-                    }
-                }
-            }
-            
-            // Disconnect
-            if let Err(e) = client.disconnect().await {
-                eprintln!("Error disconnecting: {}", e);
-            }
-        }
-        Err(e) => {
-            eprintln!("Connection failed: {}", e);
-            process::exit(1);
+            return;
         }
     }
+
+    // Build reconnect config
+    let reconnect_config = if args.persistent {
+        Some(ReconnectConfig {
+            max_attempts: args.max_retries,
+            ..ReconnectConfig::default()
+        })
+    } else {
+        None
+    };
+
+    // Outer reconnect loop — re-entered when --persistent and the session drops
+    let mut session_count = 0u32;
+    loop {
+        session_count += 1;
+
+        // Create client and connect
+        let mut client = QsshClient::new(config.clone());
+
+        let connect_result = if let Some(ref rc) = reconnect_config {
+            client.connect_with_retry(rc).await
+        } else {
+            client.connect().await
+        };
+
+        match connect_result {
+            Ok(()) => {
+                if session_count > 1 {
+                    eprintln!("Reconnected (session #{})", session_count);
+                }
+                info!("Connected successfully!");
+
+                // Start control master if -S was requested and no master existed
+                if let Some(ref ctl_path_str) = args.ctl_path {
+                    if let Some(transport) = client.transport() {
+                        let ctl_path = expand_tilde(ctl_path_str);
+                        let master = ControlMaster::new(ctl_path.clone(), Arc::new(transport.clone()));
+                        info!("Starting control master at {:?}", ctl_path);
+                        tokio::spawn(async move {
+                            if let Err(e) = master.start().await {
+                                log::error!("Control master error: {}", e);
+                            }
+                        });
+                    }
+                }
+
+                // Set up port forwards (-L and -R) via PortForwardManager
+                if has_forwards {
+                    if let Some(transport) = client.transport() {
+                        let transport = Arc::new(transport.clone());
+                        let mut pfm = PortForwardManager::new(transport);
+                        for fwd in &local_forwards {
+                            pfm.add_forward(fwd.clone());
+                        }
+                        for fwd in &remote_forwards {
+                            pfm.add_forward(fwd.clone());
+                        }
+                        for fwd in &dynamic_forwards {
+                            pfm.add_forward(fwd.clone());
+                        }
+                        match pfm.start_all().await {
+                            Ok(()) => {
+                                info!("Port forwards established");
+                                client.set_remote_forward_state(
+                                    pfm.remote_registry(),
+                                    pfm.channel_router(),
+                                );
+                            }
+                            Err(e) => {
+                                eprintln!("Error setting up port forwards: {}", e);
+                                if reconnect_config.is_none() { process::exit(1); }
+                            }
+                        }
+                    }
+                }
+
+                // Enable X11 forwarding if requested
+                if args.x11 || args.trusted_x11 {
+                    match client.enable_x11(args.trusted_x11).await {
+                        Ok(()) => info!("X11 forwarding enabled"),
+                        Err(e) => eprintln!("Warning: Failed to enable X11 forwarding: {}", e),
+                    }
+                }
+
+                // Execute command or start shell
+                if let Some(ref command) = args.command {
+                    match client.exec(command).await {
+                        Ok(output) => print!("{}", output),
+                        Err(e) => {
+                            eprintln!("Command execution failed: {}", e);
+                            if reconnect_config.is_none() { process::exit(1); }
+                        }
+                    }
+
+                    // If forwards are active, keep connection alive
+                    if has_remote_forwards || has_forwards {
+                        info!("Exec completed, keeping connection alive for port forwards");
+                        info!("Press Ctrl+C to disconnect");
+                        if let Err(e) = client.run_forward_loop().await {
+                            log::debug!("Forward loop ended: {}", e);
+                        }
+                    }
+                } else {
+                    // Interactive shell
+                    match client.shell().await {
+                        Ok(_) => info!("Shell session terminated normally"),
+                        Err(e) => {
+                            eprintln!("Shell error: {}", e);
+                            eprintln!("Error details: {:?}", e);
+                        }
+                    }
+                }
+
+                // Disconnect
+                let _ = client.disconnect().await;
+
+                // Clean up control master socket on disconnect
+                if let Some(ref ctl_path_str) = args.ctl_path {
+                    let ctl_path = expand_tilde(ctl_path_str);
+                    let _ = std::fs::remove_file(&ctl_path);
+                }
+            }
+            Err(e) => {
+                eprintln!("Connection failed: {}", e);
+                if reconnect_config.is_none() { process::exit(1); }
+                // --persistent: the connect_with_retry already exhausted retries
+                process::exit(1);
+            }
+        }
+
+        // If not persistent, exit after one session
+        if reconnect_config.is_none() {
+            break;
+        }
+
+        // Persistent mode: brief pause then reconnect
+        eprintln!("Session ended. Reconnecting in 1s...");
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+fn expand_tilde(path: &str) -> PathBuf {
+    if path.starts_with("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(format!("{}{}", home, &path[1..]));
+        }
+    }
+    PathBuf::from(path)
 }
 

@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use serde::{Serialize, Deserialize};
 use bincode;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::sync::Mutex;
 
 pub mod protocol;
@@ -38,37 +38,40 @@ const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 pub struct Transport {
     reader: Arc<Mutex<OwnedReadHalf>>,
     writer: Arc<Mutex<OwnedWriteHalf>>,
-    send_crypto: Arc<SymmetricCrypto>,
-    recv_crypto: Arc<SymmetricCrypto>,
+    send_crypto: Arc<RwLock<SymmetricCrypto>>,
+    recv_crypto: Arc<RwLock<SymmetricCrypto>>,
     send_sequence: Arc<Mutex<u64>>,
     recv_sequence: Arc<Mutex<u64>>,
+    /// Number of completed rekey operations
+    rekey_count: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl Transport {
     /// Create new transport from established TCP connection (unidirectional - for backwards compatibility)
     pub fn new(stream: TcpStream, crypto: SymmetricCrypto) -> Self {
         let (reader, writer) = stream.into_split();
-        let crypto_arc = Arc::new(crypto);
         Self {
             reader: Arc::new(Mutex::new(reader)),
             writer: Arc::new(Mutex::new(writer)),
-            send_crypto: crypto_arc.clone(),
-            recv_crypto: crypto_arc,
+            send_crypto: Arc::new(RwLock::new(crypto)),
+            recv_crypto: Arc::new(RwLock::new(SymmetricCrypto::from_shared_secret(&[0u8; 32]).unwrap())),
             send_sequence: Arc::new(Mutex::new(0)),
             recv_sequence: Arc::new(Mutex::new(0)),
+            rekey_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
-    
+
     /// Create new transport with separate send and receive crypto
     pub fn new_bidirectional(stream: TcpStream, send_crypto: SymmetricCrypto, recv_crypto: SymmetricCrypto) -> Self {
         let (reader, writer) = stream.into_split();
         Self {
             reader: Arc::new(Mutex::new(reader)),
             writer: Arc::new(Mutex::new(writer)),
-            send_crypto: Arc::new(send_crypto),
-            recv_crypto: Arc::new(recv_crypto),
+            send_crypto: Arc::new(RwLock::new(send_crypto)),
+            recv_crypto: Arc::new(RwLock::new(recv_crypto)),
             send_sequence: Arc::new(Mutex::new(0)),
             recv_sequence: Arc::new(Mutex::new(0)),
+            rekey_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
     
@@ -96,8 +99,12 @@ impl Transport {
         authenticated_data.extend_from_slice(&seq.to_be_bytes());
         authenticated_data.extend_from_slice(&plaintext);
         
-        // Encrypt
-        let (ciphertext, nonce) = self.send_crypto.encrypt(&authenticated_data)?;
+        // Encrypt (read lock: non-blocking for concurrent recv)
+        let (ciphertext, nonce) = {
+            let crypto = self.send_crypto.read()
+                .map_err(|_| QsshError::Crypto("Send crypto lock poisoned".into()))?;
+            crypto.encrypt(&authenticated_data)?
+        };
         
         // Frame format: [4 bytes length][12 bytes nonce][ciphertext]
         let frame_length = (nonce.len() + ciphertext.len()) as u32;
@@ -149,8 +156,12 @@ impl Transport {
         
         let (nonce, ciphertext) = frame.split_at(12);
         
-        // Decrypt
-        let authenticated_data = self.recv_crypto.decrypt(ciphertext, nonce)?;
+        // Decrypt (read lock: non-blocking for concurrent send)
+        let authenticated_data = {
+            let crypto = self.recv_crypto.read()
+                .map_err(|_| QsshError::Crypto("Recv crypto lock poisoned".into()))?;
+            crypto.decrypt(ciphertext, nonce)?
+        };
         
         // Verify sequence number
         if authenticated_data.len() < 8 {
@@ -182,6 +193,47 @@ impl Transport {
         Ok(message)
     }
     
+    /// Update encryption keys (rekey). Acquires write locks on both crypto instances
+    /// and resets sequence numbers to prevent nonce reuse with new keys.
+    pub async fn update_keys(&self, new_send: SymmetricCrypto, new_recv: SymmetricCrypto) -> Result<()> {
+        // Acquire writer mutex to ensure no send is in flight
+        let _writer_guard = self.writer.lock().await;
+        // Acquire reader mutex to ensure no recv is in flight
+        let _reader_guard = self.reader.lock().await;
+
+        // Swap crypto keys
+        {
+            let mut send = self.send_crypto.write()
+                .map_err(|_| QsshError::Crypto("Send crypto lock poisoned during rekey".into()))?;
+            *send = new_send;
+        }
+        {
+            let mut recv = self.recv_crypto.write()
+                .map_err(|_| QsshError::Crypto("Recv crypto lock poisoned during rekey".into()))?;
+            *recv = new_recv;
+        }
+
+        // Reset sequence numbers to 0 for the new key epoch
+        {
+            let mut seq = self.send_sequence.lock().await;
+            *seq = 0;
+        }
+        {
+            let mut seq = self.recv_sequence.lock().await;
+            *seq = 0;
+        }
+
+        let count = self.rekey_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        log::info!("Rekey #{} complete — new session keys active", count);
+
+        Ok(())
+    }
+
+    /// Get the number of completed rekey operations
+    pub fn rekey_count(&self) -> u32 {
+        self.rekey_count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Close the transport
     pub async fn close(&self) -> Result<()> {
         let mut writer = self.writer.lock().await;

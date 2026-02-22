@@ -2,15 +2,52 @@
 
 use crate::{
     Result, QsshError, QsshConfig, PortForward,
-    transport::{Transport, Message, ChannelMessage, ChannelType, ChannelManager},
+    transport::{Transport, Message, ChannelMessage, ChannelType, ChannelManager, RekeyMessage},
+    crypto::{PqKeyExchange, SymmetricCrypto},
     handshake::ClientHandshake,
-    vault::{QuantumVault, KeyType},
+    vault::QuantumVault,
     x11::{X11Forwarder, setup_x11_forwarding},
     port_forward::{RemoteForwardRegistry, ForwardedChannelRouter, handle_forwarded_channel},
 };
+use pqcrypto_traits::sign::PublicKey as _;
 use tokio::net::TcpStream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Configuration for automatic reconnection with exponential backoff
+#[derive(Debug, Clone)]
+pub struct ReconnectConfig {
+    /// Maximum number of reconnection attempts (0 = infinite)
+    pub max_attempts: u32,
+    /// Initial delay between attempts
+    pub initial_delay: Duration,
+    /// Maximum delay between attempts
+    pub max_delay: Duration,
+    /// Backoff multiplier
+    pub multiplier: f64,
+}
+
+impl Default for ReconnectConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 10,
+            initial_delay: Duration::from_millis(500),
+            max_delay: Duration::from_secs(30),
+            multiplier: 2.0,
+        }
+    }
+}
+
+impl ReconnectConfig {
+    /// Create a persistent config (infinite retries)
+    pub fn persistent() -> Self {
+        Self {
+            max_attempts: 0,
+            ..Default::default()
+        }
+    }
+}
 
 /// QSSH client
 pub struct QsshClient {
@@ -157,6 +194,36 @@ impl QsshClient {
         Ok(())
     }
 
+    /// Connect with automatic retry using exponential backoff
+    pub async fn connect_with_retry(&mut self, reconnect: &ReconnectConfig) -> Result<()> {
+        let mut attempt = 0u32;
+        let mut delay = reconnect.initial_delay;
+
+        loop {
+            attempt += 1;
+            match self.connect().await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    if reconnect.max_attempts > 0 && attempt >= reconnect.max_attempts {
+                        log::error!("Connection failed after {} attempts: {}", attempt, e);
+                        return Err(e);
+                    }
+                    log::warn!(
+                        "Connection attempt {}{} failed: {}. Retrying in {:.1}s...",
+                        attempt,
+                        if reconnect.max_attempts > 0 { format!("/{}", reconnect.max_attempts) } else { String::new() },
+                        e,
+                        delay.as_secs_f64()
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay = Duration::from_secs_f64(
+                        (delay.as_secs_f64() * reconnect.multiplier).min(reconnect.max_delay.as_secs_f64())
+                    );
+                }
+            }
+        }
+    }
+
     /// Get a reference to the transport (for setting up remote forwards before shell)
     pub fn transport(&self) -> Option<&Transport> {
         self.transport.as_ref()
@@ -176,6 +243,77 @@ impl QsshClient {
                 self.x11_forwarder = Some(fwd);
             }
         }
+        Ok(())
+    }
+
+    /// Perform key rotation (rekey) on the active connection.
+    /// Generates new key material, sends to server, waits for server's response,
+    /// derives new session keys, and updates the transport crypto.
+    pub async fn rekey(&self) -> Result<()> {
+        use sha3::Sha3_256;
+        use hkdf::Hkdf;
+
+        let transport = self.transport.as_ref()
+            .ok_or_else(|| QsshError::Protocol("Not connected".into()))?;
+
+        log::info!("Initiating rekey (rekey #{})", transport.rekey_count() + 1);
+
+        // 1. Generate new key exchange material
+        let client_kex = PqKeyExchange::new()?;
+        let (client_share, client_sig) = client_kex.create_key_share()?;
+
+        // 2. Send rekey request
+        let rekey_msg = RekeyMessage {
+            new_falcon_public_key: client_kex.falcon_pk.as_bytes().to_vec(),
+            new_key_share: client_share.clone(),
+            new_key_share_signature: client_sig,
+            request_qkd: false,
+        };
+        transport.send_message(&Message::Rekey(rekey_msg)).await?;
+
+        // 3. Wait for server's rekey response
+        let server_rekey = loop {
+            match transport.receive_message::<Message>().await? {
+                Message::Rekey(rekey) => break rekey,
+                other => {
+                    log::debug!("Received non-rekey message during rekey: {:?}", other);
+                    // Process other messages normally (channel data, etc.)
+                    continue;
+                }
+            }
+        };
+
+        // 4. Verify server's response signature
+        let verified = client_kex.verify_falcon(
+            &server_rekey.new_key_share,
+            &server_rekey.new_key_share_signature,
+            &server_rekey.new_falcon_public_key,
+        )?;
+
+        if !verified {
+            return Err(QsshError::Crypto("Server rekey signature verification failed".into()));
+        }
+
+        // 5. Derive new shared secret: HKDF(SHA3-256, client_share || server_share)
+        let mut ikm = Vec::new();
+        ikm.extend_from_slice(&client_share);
+        ikm.extend_from_slice(&server_rekey.new_key_share);
+
+        let hk = Hkdf::<Sha3_256>::new(None, &ikm);
+        let mut server_write_key = vec![0u8; 32];
+        let mut client_write_key = vec![0u8; 32];
+        hk.expand(b"qssh-rekey-server-write", &mut server_write_key)
+            .map_err(|_| QsshError::Crypto("HKDF expand failed".into()))?;
+        hk.expand(b"qssh-rekey-client-write", &mut client_write_key)
+            .map_err(|_| QsshError::Crypto("HKDF expand failed".into()))?;
+
+        // 6. Switch to new keys
+        // Client sends with client_write_key, receives with server_write_key
+        let new_send = SymmetricCrypto::from_shared_secret(&client_write_key)?;
+        let new_recv = SymmetricCrypto::from_shared_secret(&server_write_key)?;
+        transport.update_keys(new_send, new_recv).await?;
+
+        log::info!("Rekey complete — new session keys active");
         Ok(())
     }
 

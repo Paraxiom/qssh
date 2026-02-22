@@ -10,7 +10,7 @@
 //!   qssh-node disconnect alice      # Disconnect from node
 
 use clap::{Parser, Subcommand};
-use qssh::{QsshConfig, PqAlgorithm, QsshClient, KexAlgorithm, security_tiers::SecurityTier};
+use qssh::{QsshConfig, PqAlgorithm, QsshClient, KexAlgorithm, ReconnectConfig, security_tiers::SecurityTier};
 use qssh::config::ConfigParser;
 use qssh::port_forward::PortForwardManager;
 use qssh::vault::SigningClient;
@@ -69,6 +69,10 @@ enum NodeCommand {
         /// Use classical transport
         #[clap(long)]
         classical: bool,
+
+        /// Disable auto-reconnect
+        #[clap(long)]
+        no_reconnect: bool,
     },
 
     /// Check connection status for a node
@@ -97,7 +101,7 @@ async fn main() {
     match args.command {
         NodeCommand::Connect {
             node, port, local, sign_socket,
-            no_unlock, verbose, quantum_native, classical,
+            no_unlock, verbose, quantum_native, classical, no_reconnect,
         } => {
             // Initialize logging
             if verbose {
@@ -203,46 +207,19 @@ async fn main() {
                 quantum_native: use_quantum,
             };
 
-            // Connect
-            let mut client = QsshClient::new(config);
-            match client.connect().await {
-                Ok(()) => {
-                    eprintln!("Connected to {} (PQ-encrypted)", server);
-                }
-                Err(e) => {
-                    eprintln!("Connection failed: {}", e);
-                    std::process::exit(1);
-                }
-            }
+            // Reconnect config: persistent by default (node operators need reliability)
+            let reconnect_config = if no_reconnect {
+                None
+            } else {
+                Some(ReconnectConfig::persistent())
+            };
 
-            // Set up port forwards
-            if let Some(transport) = client.transport() {
-                let transport = Arc::new(transport.clone());
-                let mut pfm = PortForwardManager::new(transport);
-                for fwd in forwards {
-                    pfm.add_forward(fwd);
-                }
-                match pfm.start_all().await {
-                    Ok(()) => {
-                        eprintln!("All port forwards established");
-                        client.set_remote_forward_state(
-                            pfm.remote_registry(),
-                            pfm.channel_router(),
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: Port forward setup failed: {}", e);
-                    }
-                }
-            }
-
-            // Unlock signing service vault
+            // Vault unlock (once, before connection loop)
+            let mut vault_unlocked = false;
             if !no_unlock {
                 let sign_path = expand_tilde(&sign_socket);
                 if sign_path.exists() {
                     eprintln!("Unlocking signing service vault...");
-
-                    // Prompt for passphrase
                     eprint!("Vault passphrase: ");
                     match rpassword::read_password() {
                         Ok(passphrase) => {
@@ -250,6 +227,7 @@ async fn main() {
                             match signing_client.unlock(&passphrase).await {
                                 Ok(()) => {
                                     eprintln!("Vault unlocked — agent entering self-heal mode");
+                                    vault_unlocked = true;
                                 }
                                 Err(e) => {
                                     eprintln!("Warning: Vault unlock failed: {}", e);
@@ -267,29 +245,93 @@ async fn main() {
                 }
             }
 
-            eprintln!();
-            eprintln!("Node {} connected. Access via:", hostname);
-            for (name, p) in DEFAULT_FORWARDS {
-                eprintln!("  {} → http://localhost:{}", name, p);
-            }
-            eprintln!();
-            eprintln!("Press Ctrl+C to disconnect");
+            // Persistent reconnect loop
+            let mut session_count = 0u32;
+            loop {
+                session_count += 1;
+                let mut client = QsshClient::new(config.clone());
 
-            // Keep connection alive (forward loop)
-            match client.run_forward_loop().await {
-                Ok(()) => {}
-                Err(e) => {
-                    log::debug!("Forward loop ended: {}", e);
+                let connect_result = if let Some(ref rc) = reconnect_config {
+                    client.connect_with_retry(rc).await
+                } else {
+                    client.connect().await
+                };
+
+                match connect_result {
+                    Ok(()) => {
+                        if session_count > 1 {
+                            eprintln!("Reconnected (session #{})", session_count);
+                        } else {
+                            eprintln!("Connected to {} (PQ-encrypted)", server);
+                        }
+
+                        // Set up port forwards
+                        if let Some(transport) = client.transport() {
+                            let transport = Arc::new(transport.clone());
+                            let mut pfm = PortForwardManager::new(transport);
+                            for fwd in &forwards {
+                                pfm.add_forward(fwd.clone());
+                            }
+                            match pfm.start_all().await {
+                                Ok(()) => {
+                                    eprintln!("All port forwards established");
+                                    client.set_remote_forward_state(
+                                        pfm.remote_registry(),
+                                        pfm.channel_router(),
+                                    );
+                                }
+                                Err(e) => {
+                                    eprintln!("Warning: Port forward setup failed: {}", e);
+                                }
+                            }
+                        }
+
+                        if session_count == 1 {
+                            eprintln!();
+                            eprintln!("Node {} connected. Access via:", hostname);
+                            for (name, p) in DEFAULT_FORWARDS {
+                                eprintln!("  {} → http://localhost:{}", name, p);
+                            }
+                            if reconnect_config.is_some() {
+                                eprintln!();
+                                eprintln!("Auto-reconnect enabled. Press Ctrl+C to disconnect.");
+                            } else {
+                                eprintln!();
+                                eprintln!("Press Ctrl+C to disconnect");
+                            }
+                        }
+
+                        // Keep connection alive (forward loop)
+                        match client.run_forward_loop().await {
+                            Ok(()) => {}
+                            Err(e) => {
+                                log::debug!("Forward loop ended: {}", e);
+                            }
+                        }
+
+                        let _ = client.disconnect().await;
+                    }
+                    Err(e) => {
+                        eprintln!("Connection failed: {}", e);
+                        if reconnect_config.is_none() {
+                            std::process::exit(1);
+                        }
+                        // connect_with_retry already exhausted retries
+                        std::process::exit(1);
+                    }
                 }
+
+                // Exit if not reconnecting
+                if reconnect_config.is_none() {
+                    break;
+                }
+
+                eprintln!("Connection lost. Reconnecting in 1s...");
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
 
-            // Disconnect
-            if let Err(e) = client.disconnect().await {
-                log::debug!("Disconnect error: {}", e);
-            }
-
-            // Lock vault on disconnect
-            if !no_unlock {
+            // Lock vault on final disconnect
+            if vault_unlocked {
                 let sign_path = expand_tilde(&sign_socket);
                 if sign_path.exists() {
                     let signing_client = SigningClient::new(sign_path);

@@ -199,4 +199,5 @@ pub struct QuantumCapabilities {
 
 /// Re-exports for convenience
 pub use client::QsshClient;
+pub use client::ReconnectConfig;
 pub use server::QsshServer;
