@@ -31,6 +31,7 @@ pub mod port_forward;
 // Re-export port forwarding types
 pub use port_forward::{PortForwardManager, ForwardType};
 pub mod subsystems;
+pub mod sftp_client;
 pub mod multiplex;
 pub mod proxy;
 pub mod known_hosts;

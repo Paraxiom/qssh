@@ -366,6 +366,64 @@ impl SftpMessage {
                 buf.write_u32::<BigEndian>(*id)?;
                 buf.extend(attrs.to_bytes());
             }
+            // Client -> Server messages
+            SftpMessage::Init { version } => {
+                buf.write_u8(SSH_FXP_INIT)?;
+                buf.write_u32::<BigEndian>(*version)?;
+            }
+            SftpMessage::Open(msg) => {
+                buf.write_u8(SSH_FXP_OPEN)?;
+                buf.write_u32::<BigEndian>(msg.id)?;
+                write_string(&mut buf, &msg.filename)?;
+                let mut flags = 0u32;
+                if msg.flags.read { flags |= 0x00000001; }
+                if msg.flags.write { flags |= 0x00000002; }
+                if msg.flags.append { flags |= 0x00000004; }
+                if msg.flags.create { flags |= 0x00000008; }
+                if msg.flags.truncate { flags |= 0x00000010; }
+                if msg.flags.exclusive { flags |= 0x00000020; }
+                buf.write_u32::<BigEndian>(flags)?;
+                buf.extend(msg.attrs.to_bytes());
+            }
+            SftpMessage::Close { id, handle } => {
+                buf.write_u8(SSH_FXP_CLOSE)?;
+                buf.write_u32::<BigEndian>(*id)?;
+                write_string(&mut buf, handle)?;
+            }
+            SftpMessage::Read(msg) => {
+                buf.write_u8(SSH_FXP_READ)?;
+                buf.write_u32::<BigEndian>(msg.id)?;
+                write_string(&mut buf, &msg.handle)?;
+                buf.write_u64::<BigEndian>(msg.offset)?;
+                buf.write_u32::<BigEndian>(msg.length)?;
+            }
+            SftpMessage::Write(msg) => {
+                buf.write_u8(SSH_FXP_WRITE)?;
+                buf.write_u32::<BigEndian>(msg.id)?;
+                write_string(&mut buf, &msg.handle)?;
+                buf.write_u64::<BigEndian>(msg.offset)?;
+                write_data(&mut buf, &msg.data)?;
+            }
+            SftpMessage::Stat(msg) => {
+                buf.write_u8(SSH_FXP_STAT)?;
+                buf.write_u32::<BigEndian>(msg.id)?;
+                write_string(&mut buf, &msg.path)?;
+            }
+            SftpMessage::RealPath(msg) => {
+                buf.write_u8(SSH_FXP_REALPATH)?;
+                buf.write_u32::<BigEndian>(msg.id)?;
+                write_string(&mut buf, &msg.path)?;
+            }
+            SftpMessage::OpenDir(msg) => {
+                buf.write_u8(SSH_FXP_OPENDIR)?;
+                buf.write_u32::<BigEndian>(msg.id)?;
+                write_string(&mut buf, &msg.path)?;
+            }
+            SftpMessage::ReadDir(msg) => {
+                buf.write_u8(SSH_FXP_READDIR)?;
+                buf.write_u32::<BigEndian>(msg.id)?;
+                write_string(&mut buf, &msg.handle)?;
+            }
             _ => return Err("Message serialization not implemented".into()),
         }
 
