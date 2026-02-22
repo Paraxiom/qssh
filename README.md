@@ -93,7 +93,7 @@ qsshd --security-tier t2
 
 ## Feature Status
 
-**19/20 core SSH features implemented**
+**20/21 core SSH features implemented**
 
 ### Implemented
 - Interactive shell sessions with PTY support + SIGWINCH resize
@@ -101,6 +101,7 @@ qsshd --security-tier t2
 - Post-quantum key exchange (Falcon-512, SPHINCS+, ML-KEM)
 - SFTP file transfer
 - Port forwarding (-L local, -R remote, -D dynamic/SOCKS5)
+- ProxyJump (`-J user@jumphost`) with DirectTcpip channel tunneling
 - Config file parsing (~/.qssh/config)
 - Public key and password authentication
 - SSH agent support (qssh-agent, qssh-add)

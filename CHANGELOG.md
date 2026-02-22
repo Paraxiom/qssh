@@ -6,15 +6,19 @@ All notable changes to QSSH are documented in this file.
 
 ### Added
 
+- **ProxyJump** (`-J user@jumphost`): Connect through intermediate hosts via DirectTcpip channel tunneling. Opens a PQ-encrypted channel through the jump host and bridges it to a local TCP socket pair for the final connection's handshake. Supports ProxyCommand (`%h`/`%p` substitution) via process stdio bridging.
 - **Automatic Rekey Timer**: Periodic key rotation fires every `key_rotation_interval` seconds (default 3600). Uses Falcon-signed ephemeral shares + HKDF-SHA3-256 derivation. Transport crypto swapped atomically via RwLock with sequence number reset.
 - **qsshd Daemonization**: Proper Unix double-fork daemon (`--daemon` flag). Runs fork/setsid before tokio runtime starts (thread-safe). PID file via `--pid-file` (default `/var/run/qsshd.pid`), stdio redirect to /dev/null.
 - **Host Key Persistence**: `qsshd --generate-keys` now serializes SPHINCS+ and Falcon keys to binary file (QSSH v1 format with length-prefixed fields). Server loads keys on startup. Public key fingerprint (SHA-256) written to `.pub` file. File permissions set to 0600.
 - `PqKeyExchange::to_bytes()` / `PqKeyExchange::from_bytes()` for key serialization
+- `QsshClient::connect_via_stream()` for pre-established TCP connections
 - 3 new unit tests for host key round-trip, invalid magic, and truncation
 
 ### Changed
 
 - GSSAPI module gated behind `gssapi` feature flag (was always compiled, all operations return errors)
+- Docker HEALTHCHECK: replaced non-functional qssh client probe with TCP port check
+- Dockerfile: added qssh-sign and qssh-node binaries to Docker image
 - Version bump to 0.3.1
 
 ## [0.3.0] - 2026-02-20

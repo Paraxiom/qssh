@@ -168,24 +168,32 @@ impl QsshClient {
     pub async fn connect(&mut self) -> Result<()> {
         // Parse server address
         let addr = self.config.server.clone();
-        
+
         // Connect TCP
         let stream = TcpStream::connect(&addr).await
             .map_err(|e| QsshError::Connection(format!("Failed to connect to {}: {}", addr, e)))?;
-        
+
         log::info!("Connected to {}", addr);
-        
+
+        self.connect_with_stream(stream).await
+    }
+
+    /// Connect using a pre-established TCP stream (e.g., from ProxyJump).
+    /// Performs the PQ handshake over the provided stream.
+    pub async fn connect_via_stream(&mut self, stream: TcpStream) -> Result<()> {
+        log::info!("Connecting via pre-established stream (ProxyJump)");
+        self.connect_with_stream(stream).await
+    }
+
+    /// Internal: perform handshake and setup on a connected stream
+    async fn connect_with_stream(&mut self, stream: TcpStream) -> Result<()> {
         // Perform handshake
         let handshake = ClientHandshake::new(&self.config, stream);
         let transport = handshake.perform().await?;
-        
-        log::info!("Handshake completed successfully");
-        
-        self.transport = Some(transport);
 
-        // Don't start background transport handler - it conflicts with shell mode
-        // The shell session will handle its own transport messages
-        // self.start_transport_handler();
+        log::info!("Handshake completed successfully");
+
+        self.transport = Some(transport);
 
         // Set up port forwards
         for forward in &self.config.port_forwards {

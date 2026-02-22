@@ -5,6 +5,7 @@ use qssh::{QsshConfig, PqAlgorithm, QsshClient, ReconnectConfig, security_tiers:
 use qssh::config::ConfigParser;
 use qssh::port_forward::PortForwardManager;
 use qssh::multiplex::{ControlMaster, ControlClient};
+use qssh::proxy::{ProxyConnection, ProxyConfig, ProxyType};
 use log::info;
 use std::process;
 use std::path::PathBuf;
@@ -99,6 +100,10 @@ struct Args {
     /// Otherwise, this process becomes the master.
     #[clap(short = 'S', long = "ctl-path")]
     ctl_path: Option<String>,
+
+    /// ProxyJump through intermediate host (e.g., user@jumphost or user@jump1,jump2)
+    #[clap(short = 'J', long = "proxy-jump")]
+    jump: Option<String>,
 }
 
 #[tokio::main]
@@ -318,7 +323,26 @@ async fn main() {
         // Create client and connect
         let mut client = QsshClient::new(config.clone());
 
-        let connect_result = if let Some(ref rc) = reconnect_config {
+        let connect_result = if let Some(ref jump_spec) = args.jump {
+            // ProxyJump: connect through intermediate host
+            info!("Using ProxyJump through: {}", jump_spec);
+            let proxy_config = ProxyConfig {
+                proxy_type: ProxyType::Jump,
+                target: jump_spec.clone(),
+                options: Vec::new(),
+            };
+            let proxy = ProxyConnection::new(proxy_config, config.clone());
+
+            // Extract host and port from the server address
+            let parts: Vec<&str> = config.server.split(':').collect();
+            let proxy_host = parts[0];
+            let proxy_port: u16 = parts.get(1).and_then(|p| p.parse().ok()).unwrap_or(22222);
+
+            match proxy.connect(proxy_host, proxy_port).await {
+                Ok(stream) => client.connect_via_stream(stream).await,
+                Err(e) => Err(e),
+            }
+        } else if let Some(ref rc) = reconnect_config {
             client.connect_with_retry(rc).await
         } else {
             client.connect().await

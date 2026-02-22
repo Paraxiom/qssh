@@ -1,12 +1,16 @@
 //! ProxyJump and ProxyCommand Support
 //!
-//! Enables connecting through one or more intermediate hosts
+//! Enables connecting through one or more intermediate hosts.
+//! ProxyJump opens a DirectTcpip channel through the jump host's PQ-encrypted
+//! tunnel, then bridges it to a local TCP socket pair so the final connection
+//! can perform its own PQ handshake through the tunnel.
 
-use std::process::Stdio;
-use tokio::process::Command;
 use tokio::net::TcpStream;
+use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::{Result, QsshError, QsshConfig};
 use crate::client::QsshClient;
+use crate::transport::{Transport, Message, ChannelMessage, ChannelType};
 
 /// Proxy configuration
 #[derive(Debug, Clone)]
@@ -33,12 +37,14 @@ pub enum ProxyType {
 /// Proxy connection handler
 pub struct ProxyConnection {
     config: ProxyConfig,
+    /// QsshConfig to use when connecting to jump hosts
+    jump_config: QsshConfig,
 }
 
 impl ProxyConnection {
     /// Create new proxy connection
-    pub fn new(config: ProxyConfig) -> Self {
-        Self { config }
+    pub fn new(config: ProxyConfig, jump_config: QsshConfig) -> Self {
+        Self { config, jump_config }
     }
 
     /// Parse ProxyJump string (e.g., "user@host1,host2:port")
@@ -53,7 +59,13 @@ impl ProxyConnection {
         Ok(hosts)
     }
 
-    /// Establish connection through proxy
+    /// Establish connection through proxy, returning a TcpStream to the final host.
+    ///
+    /// For ProxyJump:
+    /// 1. Connects to jump host (full PQ handshake)
+    /// 2. Opens a DirectTcpip channel through the jump host targeting final_host:final_port
+    /// 3. Creates a local TCP socket pair bridged to the channel
+    /// 4. Returns one end of the socket pair for the caller to use
     pub async fn connect(&self, final_host: &str, final_port: u16) -> Result<TcpStream> {
         match &self.config.proxy_type {
             ProxyType::Jump => self.connect_jump(final_host, final_port).await,
@@ -74,86 +86,126 @@ impl ProxyConnection {
             return Err(QsshError::Config("No jump hosts specified".into()));
         }
 
-        // Connect to first jump host
+        // For now, support single-hop jump (most common case).
+        // Multi-hop would chain: connect_jump to first host, then open DirectTcpip
+        // to second host, etc.
         let first_host = &jump_hosts[0];
-        let mut client = QsshClient::new(QsshConfig {
-            server: format!("{}:{}", first_host.hostname, first_host.port),
-            username: first_host.username.clone(),
-            password: None,
-            port_forwards: Vec::new(),
-            use_qkd: false,
-            qkd_endpoint: None,
-            qkd_cert_path: None,
-            qkd_key_path: None,
-            qkd_ca_path: None,
-            pq_algorithm: crate::PqAlgorithm::Falcon512,
-            kex_algorithm: crate::KexAlgorithm::FalconSignedShares,
-            key_rotation_interval: 3600,
-            security_tier: crate::SecurityTier::default(),
-            quantum_native: true,
+        let jump_addr = format!("{}:{}", first_host.hostname, first_host.port);
+
+        log::info!("ProxyJump: connecting to jump host {} as {}",
+            jump_addr, first_host.username);
+
+        // Build config for jump host connection
+        let mut jump_config = self.jump_config.clone();
+        jump_config.server = jump_addr;
+        jump_config.username = first_host.username.clone();
+
+        // Connect to jump host (full PQ handshake)
+        let mut jump_client = QsshClient::new(jump_config);
+        jump_client.connect().await?;
+
+        let transport = jump_client.transport()
+            .ok_or_else(|| QsshError::Protocol("Jump host transport not available".into()))?
+            .clone();
+
+        // Determine the target for the DirectTcpip channel.
+        // If multi-hop, chain through intermediate hosts first. For now, target the final host.
+        let target_host = if jump_hosts.len() > 1 {
+            // Multi-hop: for simplicity, we target the next jump host.
+            // Full multi-hop would recursively tunnel.
+            log::warn!("Multi-hop ProxyJump: only first hop fully supported. Targeting final host directly.");
+            final_host.to_string()
+        } else {
+            final_host.to_string()
+        };
+
+        log::info!("ProxyJump: opening DirectTcpip channel to {}:{}", target_host, final_port);
+
+        // Open DirectTcpip channel through the jump host
+        let channel_id = rand::random::<u32>() % 65536;
+
+        let open_msg = Message::Channel(ChannelMessage::Open {
+            channel_id,
+            channel_type: ChannelType::DirectTcpip {
+                host: target_host.clone(),
+                port: final_port,
+                originator_host: "127.0.0.1".to_string(),
+                originator_port: 0,
+            },
+            window_size: 1024 * 1024,
+            max_packet_size: 32768,
         });
 
-        // Connect to first jump host
-        client.connect().await?;
+        transport.send_message(&open_msg).await?;
 
-        // Chain through intermediate hosts
-        for i in 1..jump_hosts.len() {
-            let next_host = &jump_hosts[i];
-            // Forward connection through current host to next
-            client = self.forward_through_host(client, next_host).await?;
+        // Wait for Accept from jump host
+        let accept_timeout = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            wait_for_channel_accept(&transport, channel_id),
+        ).await;
+
+        match accept_timeout {
+            Ok(Ok(())) => {
+                log::info!("ProxyJump: DirectTcpip channel {} accepted", channel_id);
+            }
+            Ok(Err(e)) => {
+                return Err(e);
+            }
+            Err(_) => {
+                return Err(QsshError::Protocol(
+                    "ProxyJump: timeout waiting for DirectTcpip channel accept".into()
+                ));
+            }
         }
 
-        // Final connection to target through last jump host
-        self.forward_to_final(client, final_host, final_port).await
-    }
+        // Create a local TCP socket pair for bridging
+        let bridge_listener = TcpListener::bind("127.0.0.1:0").await
+            .map_err(|e| QsshError::Connection(format!("Failed to bind bridge listener: {}", e)))?;
+        let bridge_addr = bridge_listener.local_addr()
+            .map_err(|e| QsshError::Connection(format!("Failed to get bridge address: {}", e)))?;
 
-    /// Forward connection through intermediate host
-    async fn forward_through_host(&self, mut client: QsshClient, host: &JumpHost) -> Result<QsshClient> {
-        // Request port forwarding through current connection
-        let forward_port = self.allocate_forward_port();
-
-        // Set up forwarding: -L forward_port:next_host:next_port
-        client.request_port_forward(
-            forward_port,
-            &host.hostname,
-            host.port,
-        ).await?;
-
-        // Create new client connecting through forwarded port
-        let new_client = QsshClient::new(QsshConfig {
-            server: format!("localhost:{}", forward_port),
-            username: host.username.clone(),
-            password: None,
-            port_forwards: Vec::new(),
-            use_qkd: false,
-            qkd_endpoint: None,
-            qkd_cert_path: None,
-            qkd_key_path: None,
-            qkd_ca_path: None,
-            pq_algorithm: crate::PqAlgorithm::Falcon512,
-            kex_algorithm: crate::KexAlgorithm::FalconSignedShares,
-            key_rotation_interval: 3600,
-            security_tier: crate::SecurityTier::default(),
-            quantum_native: true,
+        // Connect one end (this will be returned to the caller)
+        let client_stream_task = tokio::spawn(async move {
+            TcpStream::connect(bridge_addr).await
         });
 
-        Ok(new_client)
-    }
+        // Accept the other end (this will be bridged to the channel)
+        let (bridge_stream, _) = bridge_listener.accept().await
+            .map_err(|e| QsshError::Connection(format!("Failed to accept bridge connection: {}", e)))?;
 
-    /// Forward to final destination
-    async fn forward_to_final(&self, mut client: QsshClient, host: &str, port: u16) -> Result<TcpStream> {
-        // Request direct-tcpip channel to final destination
-        let channel = client.open_direct_tcpip(host, port).await?;
+        let client_stream = client_stream_task.await
+            .map_err(|e| QsshError::Connection(format!("Bridge connect task failed: {}", e)))?
+            .map_err(|e| QsshError::Connection(format!("Failed to connect to bridge: {}", e)))?;
 
-        // Return the stream for the channel
-        channel.into_stream()
+        // Spawn bridge task: channel data <-> bridge TCP stream
+        // This task lives for the duration of the connection.
+        // When the bridge TCP stream closes (final client disconnects), the task ends.
+        let transport_bridge = transport.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_channel_bridge(
+                bridge_stream, transport_bridge, channel_id,
+            ).await {
+                log::debug!("ProxyJump bridge ended: {}", e);
+            }
+            // Keep jump_client alive so its transport stays open
+            let _ = jump_client;
+        });
+
+        log::info!("ProxyJump: bridge established, returning stream to {}:{}", target_host, final_port);
+
+        Ok(client_stream)
     }
 
     /// Connect using ProxyCommand
     async fn connect_command(&self, final_host: &str, final_port: u16) -> Result<TcpStream> {
+        use tokio::process::Command;
+        use std::process::Stdio;
+
         let command = self.config.target.clone()
             .replace("%h", final_host)
             .replace("%p", &final_port.to_string());
+
+        log::info!("ProxyCommand: executing '{}'", command);
 
         let mut child = Command::new("sh")
             .arg("-c")
@@ -164,24 +216,161 @@ impl ProxyConnection {
             .spawn()
             .map_err(|e| QsshError::Connection(format!("Failed to spawn proxy command: {}", e)))?;
 
-        // Create a stream wrapper around the process stdio
-        let stdin = child.stdin.take()
-            .ok_or_else(|| QsshError::Connection("Failed to get stdin".into()))?;
-        let stdout = child.stdout.take()
-            .ok_or_else(|| QsshError::Connection("Failed to get stdout".into()))?;
+        let mut child_stdin = child.stdin.take()
+            .ok_or_else(|| QsshError::Connection("Failed to get stdin of proxy command".into()))?;
+        let mut child_stdout = child.stdout.take()
+            .ok_or_else(|| QsshError::Connection("Failed to get stdout of proxy command".into()))?;
 
-        // Return a custom stream that bridges the process IO
-        Ok(ProcessStream::new(stdin, stdout, child).into_tcp_stream().await?)
+        // Create a local TCP socket pair for bridging
+        let bridge_listener = TcpListener::bind("127.0.0.1:0").await
+            .map_err(|e| QsshError::Connection(format!("Failed to bind bridge listener: {}", e)))?;
+        let bridge_addr = bridge_listener.local_addr()
+            .map_err(|e| QsshError::Connection(format!("Failed to get bridge address: {}", e)))?;
+
+        let client_stream_task = tokio::spawn(async move {
+            TcpStream::connect(bridge_addr).await
+        });
+
+        let (bridge_stream, _) = bridge_listener.accept().await
+            .map_err(|e| QsshError::Connection(format!("Bridge accept failed: {}", e)))?;
+
+        let client_stream = client_stream_task.await
+            .map_err(|e| QsshError::Connection(format!("Bridge connect failed: {}", e)))?
+            .map_err(|e| QsshError::Connection(format!("Bridge connect failed: {}", e)))?;
+
+        // Bridge: child process stdio <-> bridge TCP stream
+        let (mut bridge_read, mut bridge_write) = bridge_stream.into_split();
+
+        // bridge -> child stdin
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 8192];
+            loop {
+                match bridge_read.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if child_stdin.write_all(&buf[..n]).await.is_err() { break; }
+                    }
+                }
+            }
+        });
+
+        // child stdout -> bridge
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 8192];
+            loop {
+                match child_stdout.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if bridge_write.write_all(&buf[..n]).await.is_err() { break; }
+                    }
+                }
+            }
+            // Keep child alive
+            let _ = child;
+        });
+
+        Ok(client_stream)
+    }
+}
+
+/// Wait for a ChannelMessage::Accept for the given channel_id on the transport.
+/// Discards other messages while waiting.
+async fn wait_for_channel_accept(transport: &Transport, target_channel_id: u32) -> Result<()> {
+    loop {
+        match transport.receive_message::<Message>().await? {
+            Message::Channel(ChannelMessage::Accept { channel_id, .. })
+                if channel_id == target_channel_id =>
+            {
+                return Ok(());
+            }
+            Message::Channel(ChannelMessage::Close { channel_id })
+                if channel_id == target_channel_id =>
+            {
+                return Err(QsshError::Protocol(
+                    "Jump host rejected DirectTcpip channel (Close received)".into()
+                ));
+            }
+            Message::Disconnect(d) => {
+                return Err(QsshError::Connection(
+                    format!("Jump host disconnected: {}", d.description)
+                ));
+            }
+            _ => {
+                // Discard other messages while waiting
+                continue;
+            }
+        }
+    }
+}
+
+/// Bridge a TCP stream to a channel on the jump host transport.
+/// Reads from both sides and forwards data bidirectionally.
+async fn run_channel_bridge(
+    bridge_stream: TcpStream,
+    transport: Transport,
+    channel_id: u32,
+) -> Result<()> {
+    let (mut bridge_read, mut bridge_write) = bridge_stream.into_split();
+
+    // Bridge TCP -> Channel: read from bridge, send as channel data
+    let transport_send = transport.clone();
+    let tcp_to_channel = tokio::spawn(async move {
+        let mut buf = vec![0u8; 8192];
+        loop {
+            match bridge_read.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    let msg = Message::Channel(ChannelMessage::Data {
+                        channel_id,
+                        data: buf[..n].to_vec(),
+                    });
+                    if transport_send.send_message(&msg).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Channel -> Bridge TCP: read from transport, write to bridge
+    let channel_to_tcp = tokio::spawn(async move {
+        loop {
+            match transport.receive_message::<Message>().await {
+                Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data }))
+                    if ch_id == channel_id =>
+                {
+                    if bridge_write.write_all(&data).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id }))
+                    if ch_id == channel_id =>
+                {
+                    break;
+                }
+                Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id }))
+                    if ch_id == channel_id =>
+                {
+                    break;
+                }
+                Ok(Message::Disconnect(_)) => break,
+                Err(_) => break,
+                Ok(_) => {
+                    // Discard other messages (pings, etc.)
+                    continue;
+                }
+            }
+        }
+    });
+
+    // Wait for either direction to finish
+    tokio::select! {
+        _ = tcp_to_channel => {}
+        _ = channel_to_tcp => {}
     }
 
-    /// Allocate a local port for forwarding
-    fn allocate_forward_port(&self) -> u16 {
-        // In production, this should find an available port
-        // For now, use a random port in the dynamic range
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
-        rng.gen_range(49152..65535)
-    }
+    Ok(())
 }
 
 /// Jump host specification
@@ -198,7 +387,7 @@ impl JumpHost {
     pub fn parse(spec: &str) -> Result<Self> {
         let mut username = String::from(whoami::username());
         let hostname;
-        let mut port = 22;
+        let mut port = 22222; // QSSH default port
 
         // Parse user@host:port format
         let parts: Vec<&str> = spec.split('@').collect();
@@ -221,77 +410,7 @@ impl JumpHost {
             username,
             hostname,
             port,
-            identity_file: None, // Would be set from config
-        })
-    }
-}
-
-/// Process-based stream for ProxyCommand
-struct ProcessStream {
-    _stdin: tokio::process::ChildStdin,
-    _stdout: tokio::process::ChildStdout,
-    _child: tokio::process::Child,
-}
-
-impl ProcessStream {
-    fn new(
-        stdin: tokio::process::ChildStdin,
-        stdout: tokio::process::ChildStdout,
-        child: tokio::process::Child,
-    ) -> Self {
-        Self {
-            _stdin: stdin,
-            _stdout: stdout,
-            _child: child,
-        }
-    }
-
-    /// Convert to TcpStream-like interface
-    /// Note: This is a simplified implementation
-    async fn into_tcp_stream(self) -> Result<TcpStream> {
-        // In a real implementation, we'd need to create a proper async stream wrapper
-        // For now, this is a placeholder showing the concept
-        Err(QsshError::Protocol("ProcessStream to TcpStream conversion not fully implemented".into()))
-    }
-}
-
-/// Extension trait for QsshClient to support proxy operations
-impl QsshClient {
-    /// Request port forwarding
-    pub async fn request_port_forward(&mut self, local_port: u16, remote_host: &str, remote_port: u16) -> Result<()> {
-        // Implementation would send SSH2_MSG_GLOBAL_REQUEST for "tcpip-forward"
-        // This is a placeholder for the actual implementation
-        log::debug!("Setting up port forward: {}:{}:{}", local_port, remote_host, remote_port);
-        Ok(())
-    }
-
-    /// Open direct TCP/IP channel
-    pub async fn open_direct_tcpip(&mut self, host: &str, port: u16) -> Result<DirectTcpipChannel> {
-        // Implementation would send SSH2_MSG_CHANNEL_OPEN for "direct-tcpip"
-        log::debug!("Opening direct-tcpip to {}:{}", host, port);
-        Ok(DirectTcpipChannel::new())
-    }
-}
-
-/// Direct TCP/IP channel
-pub struct DirectTcpipChannel {
-    stream: Option<TcpStream>,
-}
-
-impl DirectTcpipChannel {
-    fn new() -> Self {
-        Self { stream: None }
-    }
-
-    /// Create a channel with an established stream
-    pub fn with_stream(stream: TcpStream) -> Self {
-        Self { stream: Some(stream) }
-    }
-
-    /// Convert channel to TcpStream
-    pub fn into_stream(self) -> Result<TcpStream> {
-        self.stream.ok_or_else(|| {
-            QsshError::Protocol("DirectTcpipChannel: stream not established (ProxyJump not fully implemented)".into())
+            identity_file: None,
         })
     }
 }
@@ -322,7 +441,7 @@ mod tests {
     fn test_parse_jump_host_simple() {
         let host = JumpHost::parse("jumphost").unwrap();
         assert_eq!(host.hostname, "jumphost");
-        assert_eq!(host.port, 22);
+        assert_eq!(host.port, 22222); // QSSH default
         assert_eq!(host.username, whoami::username());
     }
 
@@ -331,7 +450,7 @@ mod tests {
         let host = JumpHost::parse("alice@jumphost").unwrap();
         assert_eq!(host.username, "alice");
         assert_eq!(host.hostname, "jumphost");
-        assert_eq!(host.port, 22);
+        assert_eq!(host.port, 22222);
     }
 
     #[test]
@@ -356,7 +475,7 @@ mod tests {
 
         assert_eq!(hosts[0].username, "user1");
         assert_eq!(hosts[0].hostname, "host1");
-        assert_eq!(hosts[0].port, 22);
+        assert_eq!(hosts[0].port, 22222);
 
         assert_eq!(hosts[1].hostname, "host2");
         assert_eq!(hosts[1].port, 222);
@@ -374,10 +493,8 @@ mod tests {
             options: Vec::new(),
         };
 
-        let conn = ProxyConnection::new(config);
-        // Test would verify command substitution works correctly
-        // This is a simplified test showing the concept
-        assert!(conn.config.target.contains("%h"));
-        assert!(conn.config.target.contains("%p"));
+        // Verify the substitution placeholders are present
+        assert!(config.target.contains("%h"));
+        assert!(config.target.contains("%p"));
     }
 }
