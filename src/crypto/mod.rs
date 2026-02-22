@@ -248,6 +248,78 @@ impl PqKeyExchange {
             Err(_) => Ok(false)
         }
     }
+
+    /// Serialize all keys to bytes (for host key persistence).
+    ///
+    /// Format: `[MAGIC(4)][VERSION(1)][sphincs_sk_len(4)][sphincs_sk][sphincs_pk_len(4)][sphincs_pk]
+    ///          [falcon_sk_len(4)][falcon_sk][falcon_pk_len(4)][falcon_pk]`
+    pub fn to_bytes(&self) -> Vec<u8> {
+        use pqcrypto_traits::sign::{SecretKey, PublicKey};
+
+        let sphincs_sk = self.sphincs_sk.as_bytes();
+        let sphincs_pk = self.sphincs_pk.as_bytes();
+        let falcon_sk = self.falcon_sk.as_bytes();
+        let falcon_pk = self.falcon_pk.as_bytes();
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"QSSH");           // magic
+        buf.push(1u8);                              // version
+        buf.extend_from_slice(&(sphincs_sk.len() as u32).to_be_bytes());
+        buf.extend_from_slice(sphincs_sk);
+        buf.extend_from_slice(&(sphincs_pk.len() as u32).to_be_bytes());
+        buf.extend_from_slice(sphincs_pk);
+        buf.extend_from_slice(&(falcon_sk.len() as u32).to_be_bytes());
+        buf.extend_from_slice(falcon_sk);
+        buf.extend_from_slice(&(falcon_pk.len() as u32).to_be_bytes());
+        buf.extend_from_slice(falcon_pk);
+        buf
+    }
+
+    /// Deserialize keys from bytes (for host key loading).
+    pub fn from_bytes(data: &[u8]) -> Result<Self> {
+        if data.len() < 5 {
+            return Err(QsshError::Crypto("Host key file too short".into()));
+        }
+        if &data[0..4] != b"QSSH" {
+            return Err(QsshError::Crypto("Invalid host key file magic".into()));
+        }
+        if data[4] != 1 {
+            return Err(QsshError::Crypto(format!("Unsupported host key version: {}", data[4])));
+        }
+
+        let mut pos = 5;
+        let mut read_field = |pos: &mut usize, name: &str| -> Result<Vec<u8>> {
+            if *pos + 4 > data.len() {
+                return Err(QsshError::Crypto(format!("Truncated host key: missing {} length", name)));
+            }
+            let len = u32::from_be_bytes(data[*pos..*pos+4].try_into().unwrap()) as usize;
+            *pos += 4;
+            if *pos + len > data.len() {
+                return Err(QsshError::Crypto(format!("Truncated host key: missing {} data", name)));
+            }
+            let field = data[*pos..*pos+len].to_vec();
+            *pos += len;
+            Ok(field)
+        };
+
+        let sphincs_sk_bytes = read_field(&mut pos, "sphincs_sk")?;
+        let sphincs_pk_bytes = read_field(&mut pos, "sphincs_pk")?;
+        let falcon_sk_bytes = read_field(&mut pos, "falcon_sk")?;
+        let falcon_pk_bytes = read_field(&mut pos, "falcon_pk")?;
+
+        use pqcrypto_traits::sign::{SecretKey as SecretKeyTrait, PublicKey as PublicKeyTrait};
+
+        let sphincs_sk = <sphincs::SecretKey as SecretKeyTrait>::from_bytes(&sphincs_sk_bytes)
+            .map_err(|e| QsshError::Crypto(format!("Invalid SPHINCS+ secret key: {:?}", e)))?;
+        let sphincs_pk = <sphincs::PublicKey as PublicKeyTrait>::from_bytes(&sphincs_pk_bytes)
+            .map_err(|e| QsshError::Crypto(format!("Invalid SPHINCS+ public key: {:?}", e)))?;
+        let falcon_sk = <falcon512::SecretKey as SecretKeyTrait>::from_bytes(&falcon_sk_bytes)
+            .map_err(|e| QsshError::Crypto(format!("Invalid Falcon secret key: {:?}", e)))?;
+        let falcon_pk = <falcon512::PublicKey as PublicKeyTrait>::from_bytes(&falcon_pk_bytes)
+            .map_err(|e| QsshError::Crypto(format!("Invalid Falcon public key: {:?}", e)))?;
+
+        Ok(Self { sphincs_sk, sphincs_pk, falcon_sk, falcon_pk })
+    }
 }
 
 /// Symmetric encryption using AES-256-GCM (NIST approved)
@@ -420,5 +492,45 @@ mod tests {
         // Both should still decrypt correctly
         assert_eq!(crypto.decrypt(&ct1, &nonce1).unwrap(), plaintext);
         assert_eq!(crypto.decrypt(&ct2, &nonce2).unwrap(), plaintext);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn test_host_key_roundtrip() {
+        use pqcrypto_traits::sign::{SecretKey, PublicKey};
+
+        let original = PqKeyExchange::new().unwrap();
+        let bytes = original.to_bytes();
+
+        // Verify magic and version
+        assert_eq!(&bytes[0..4], b"QSSH");
+        assert_eq!(bytes[4], 1);
+
+        // Deserialize
+        let loaded = PqKeyExchange::from_bytes(&bytes).unwrap();
+
+        // Verify all keys match
+        assert_eq!(original.sphincs_sk.as_bytes(), loaded.sphincs_sk.as_bytes());
+        assert_eq!(original.sphincs_pk.as_bytes(), loaded.sphincs_pk.as_bytes());
+        assert_eq!(original.falcon_sk.as_bytes(), loaded.falcon_sk.as_bytes());
+        assert_eq!(original.falcon_pk.as_bytes(), loaded.falcon_pk.as_bytes());
+
+        // Verify the loaded key can sign and verify
+        let msg = b"test message";
+        let sig = loaded.sign_falcon(msg).unwrap();
+        let valid = loaded.verify_falcon(msg, &sig, loaded.falcon_pk.as_bytes()).unwrap();
+        assert!(valid);
+    }
+
+    #[test]
+    fn test_host_key_invalid_magic() {
+        let result = PqKeyExchange::from_bytes(b"NOPE\x01");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_host_key_truncated() {
+        let result = PqKeyExchange::from_bytes(b"QSS");
+        assert!(result.is_err());
     }
 }

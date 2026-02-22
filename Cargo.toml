@@ -133,7 +133,7 @@ tempfile = "3.8"
 [features]
 default = ["sftp"]
 sftp = []
-gssapi = []  # Experimental - NOT IMPLEMENTED, returns errors
+gssapi = []  # STUB — placeholder only, all operations return errors. Requires GSSAPI library integration.
 multiplex = []  # Incomplete
 libp2p-transport = ["libp2p"]
 qkd = ["winterfell"]  # qkd_client disabled until path exists

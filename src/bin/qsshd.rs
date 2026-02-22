@@ -214,8 +214,21 @@ async fn async_main(args: Args) {
         log::warn!("No authorized_keys file found at {:?}", args.authorized_keys);
     }
 
-    // Load host key (in production, would deserialize from file)
-    // For now, generate new key each time
+    // Load or generate host key
+    if args.host_key.exists() {
+        match load_host_key(&args.host_key).await {
+            Ok(_host_key) => {
+                log::info!("Loaded host key from {:?}", args.host_key);
+            }
+            Err(e) => {
+                log::error!("Failed to load host key from {:?}: {}", args.host_key, e);
+                log::error!("Delete the file and restart to regenerate, or run: qsshd --generate-keys");
+                process::exit(1);
+            }
+        }
+    } else {
+        log::warn!("No host key found at {:?} — generating ephemeral key (run qsshd --generate-keys for persistence)", args.host_key);
+    }
 
     if args.qkd {
         log::info!("QKD support enabled");
@@ -309,23 +322,54 @@ async fn load_qkd_config(path: &PathBuf) -> Result<QkdFileConfig, Box<dyn std::e
     Ok(config)
 }
 
-/// Generate host keys
+/// Generate host keys and save to file
 async fn generate_host_keys(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     use qssh::crypto::PqKeyExchange;
-    
+
     // Create directory if needed
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
-    
+
     // Generate keys
-    let _host_key = PqKeyExchange::new()?;
-    
-    // In production, serialize and save to file
-    // For demo, just create empty file
-    fs::write(path, b"# QSSH Host Key\n# Format: SPHINCS+ and Falcon keys\n").await?;
-    
+    let host_key = PqKeyExchange::new()?;
+    let key_bytes = host_key.to_bytes();
+
+    // Set restrictive permissions before writing
+    fs::write(path, &key_bytes).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    // Also write the public key fingerprint for display
+    let pk_path = path.with_extension("pub");
+    let fingerprint = {
+        use sha2::{Sha256, Digest};
+        use pqcrypto_traits::sign::PublicKey as _;
+        let mut hasher = Sha256::new();
+        hasher.update(host_key.public_bytes());
+        hasher.update(host_key.falcon_pk.as_bytes());
+        let hash = hasher.finalize();
+        base64::engine::general_purpose::STANDARD_NO_PAD.encode(&hash[..])
+    };
+    let pub_content = format!(
+        "qssh-sphincs+falcon {} host@qsshd\n",
+        fingerprint,
+    );
+    fs::write(&pk_path, pub_content.as_bytes()).await?;
+    println!("Public key fingerprint: SHA256:{}", fingerprint);
+    println!("Public key saved to: {:?}", pk_path);
+
     Ok(())
+}
+
+/// Load host key from file
+async fn load_host_key(path: &PathBuf) -> Result<qssh::crypto::PqKeyExchange, Box<dyn std::error::Error>> {
+    let data = fs::read(path).await?;
+    let key = qssh::crypto::PqKeyExchange::from_bytes(&data)?;
+    Ok(key)
 }
 
 /// Load authorized keys file

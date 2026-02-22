@@ -6,8 +6,8 @@ QSSH (Quantum-Secure Shell) is a post-quantum cryptographic replacement for SSH,
 
 ## Current Status: Beta
 
-**Version**: 1.0.0
-**Last Updated**: January 2026
+**Version**: 0.3.1
+**Last Updated**: February 2026
 
 ### Production-Ready Features
 
@@ -17,21 +17,27 @@ QSSH (Quantum-Secure Shell) is a post-quantum cryptographic replacement for SSH,
 | AES-256-GCM Encryption | ✅ Ready | NIST-approved symmetric crypto |
 | Session Resumption | ✅ Ready | Proper HKDF key derivation |
 | Local Port Forwarding (-L) | ✅ Ready | Full implementation |
+| Remote Port Forwarding (-R) | ✅ Ready | Full implementation with ForwardedTcpip channels |
 | Dynamic Port Forwarding (-D) | ✅ Ready | SOCKS5 proxy support |
 | Security Tiers (T0-T5) | ✅ Ready | Configurable threat models |
 | 768-byte Quantum Frames | ✅ Ready | Traffic analysis resistance |
-| Connection Multiplexing | ✅ Ready | SSH-style ControlMaster |
+| Connection Multiplexing (-S) | ✅ Ready | SSH-style ControlMaster/ControlClient |
 | Quantum Transport KEM | ✅ Ready | Bidirectional key exchange |
+| Auto-Reconnect (--persistent) | ✅ Ready | Exponential backoff, configurable retries |
+| Key Rotation (Rekey) | ✅ Ready | Automatic timer + manual rekey |
+| Daemonization (--daemon) | ✅ Ready | Double-fork, PID file, stdio redirect |
+| Host Key Persistence | ✅ Ready | SPHINCS+/Falcon serialization with 0600 perms |
+| Signing Service (qssh-sign) | ✅ Ready | Vault + Lamport OTS + audit chain |
+| Node Connect (qssh-node) | ✅ Ready | One-liner PQ tunnel to QuantumHarmony nodes |
 
 ### Known Limitations
 
 | Feature | Status | Workaround |
 |---------|--------|------------|
 | Falcon on macOS | ⚠️ Segfault | Use SPHINCS+ or run on Linux |
-| Remote Port Forwarding (-R) | 🚧 Partial | Use local forwarding |
 | ProxyJump | 🚧 Partial | Use direct connections |
 | X11 Forwarding | 🚧 Partial | Use X11 over port forward |
-| GSSAPI/Kerberos | ❌ Not Implemented | Use password/key auth |
+| GSSAPI/Kerberos | ❌ Stub (feature-gated) | Use password/key auth |
 
 ## Security Architecture
 
@@ -194,12 +200,11 @@ pub enum SecurityTier {
 cargo test
 ```
 
-### Test Results (January 2026)
+### Test Results (February 2026)
 
 ```
-Library tests:     75 passed, 4 ignored
-Integration tests: 35 passed, 40 ignored (macOS pqcrypto)
-Total:            110 passed, 44 ignored
+Total:  160+ tests passing, ~40 ignored (macOS pqcrypto-falcon segfault)
+Formal: 30 Kani harnesses, 20 Verus proofs, 67 Lean 4 theorems
 ```
 
 Ignored tests are due to pqcrypto-falcon segfaults on macOS. These tests pass on Linux.

@@ -34,6 +34,7 @@ pub mod known_hosts;
 pub mod compression;
 pub mod session;
 pub mod certificate;
+#[cfg(feature = "gssapi")]
 pub mod gssapi;
 pub mod security_tiers;
 
