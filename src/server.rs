@@ -699,8 +699,15 @@ async fn handle_channel_message(
         ChannelMessage::ExecRequest { channel_id, command } => {
             log::info!("User {} exec on channel {}: {}", username, channel_id, command);
 
-            // Execute command
-            handle_exec_request(channel_id, command, transport, username).await?;
+            // Spawn exec in background so the main message loop keeps running
+            // (allows concurrent channel handling, e.g. -L DirectTcpip opens)
+            let transport_exec = transport.clone();
+            let username_exec = username.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = handle_exec_request(channel_id, command, &transport_exec, &username_exec).await {
+                    log::error!("Exec error for {}: {}", username_exec, e);
+                }
+            });
         }
         ChannelMessage::SubsystemRequest { channel_id, subsystem } => {
             log::info!("User {} requesting subsystem '{}' on channel {}", username, subsystem, channel_id);

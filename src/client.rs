@@ -197,16 +197,29 @@ impl QsshClient {
         transport.send_message(&open_msg).await?;
         
         // Wait for channel accept confirmation
+        let router = self.forwarded_channel_router.clone();
         let start = std::time::Instant::now();
         loop {
             if start.elapsed() > std::time::Duration::from_secs(5) {
                 return Err(QsshError::Protocol("Timeout waiting for channel accept".into()));
             }
-            
+
             match transport.receive_message::<Message>().await {
                 Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch_id, .. })) if ch_id == channel_id => {
                     log::debug!("Channel {} accepted by server", channel_id);
                     break;
+                }
+                Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch_id, .. })) => {
+                    router.route_data(ch_id, Vec::new()).await;
+                }
+                Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data })) => {
+                    router.route_data(ch_id, data).await;
+                }
+                Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id })) => {
+                    router.remove(ch_id).await;
+                }
+                Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) => {
+                    router.remove(ch_id).await;
                 }
                 Ok(msg) => {
                     log::debug!("Received while waiting for accept: {:?}", msg);
@@ -225,53 +238,68 @@ impl QsshClient {
     pub async fn exec(&self, command: &str) -> Result<String> {
         let transport = self.transport.as_ref()
             .ok_or_else(|| QsshError::Protocol("Not connected".into()))?;
-        
+        let router = self.forwarded_channel_router.clone();
+
         // Open exec channel
         let channel_id = self.channel_manager.open_channel(ChannelType::Session).await?;
-        
+
         let open_msg = Message::Channel(ChannelMessage::Open {
             channel_id,
             channel_type: ChannelType::Session,
             window_size: 1024 * 1024,
             max_packet_size: 32768,
         });
-        
+
         transport.send_message(&open_msg).await?;
-        
+
         // Wait for channel accept
         let start = std::time::Instant::now();
         loop {
             if start.elapsed() > std::time::Duration::from_secs(5) {
                 return Err(QsshError::Protocol("Timeout waiting for channel accept".into()));
             }
-            
+
             match transport.receive_message::<Message>().await {
                 Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch_id, .. })) if ch_id == channel_id => {
                     break;
+                }
+                // Route Accept for forwarded channels
+                Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch_id, .. })) => {
+                    router.route_data(ch_id, Vec::new()).await;
+                }
+                // Route Data for forwarded channels
+                Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data })) => {
+                    router.route_data(ch_id, data).await;
+                }
+                Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id })) => {
+                    router.remove(ch_id).await;
+                }
+                Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) => {
+                    router.remove(ch_id).await;
                 }
                 Ok(_) => {}
                 Err(e) => return Err(e),
             }
         }
-        
+
         // Send exec request
         let exec_msg = Message::Channel(ChannelMessage::ExecRequest {
             channel_id,
             command: command.to_string(),
         });
-        
+
         transport.send_message(&exec_msg).await?;
-        
+
         // Collect output
         let mut output = Vec::new();
         let timeout = std::time::Duration::from_secs(30);
         let start = std::time::Instant::now();
-        
+
         loop {
             if start.elapsed() > timeout {
                 break;
             }
-            
+
             match transport.receive_message::<Message>().await {
                 Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data })) if ch_id == channel_id => {
                     output.extend_from_slice(&data);
@@ -282,15 +310,28 @@ impl QsshClient {
                 Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) if ch_id == channel_id => {
                     break;
                 }
+                // Route messages for forwarded channels
+                Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch_id, .. })) => {
+                    router.route_data(ch_id, Vec::new()).await;
+                }
+                Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data })) => {
+                    router.route_data(ch_id, data).await;
+                }
+                Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id })) => {
+                    router.remove(ch_id).await;
+                }
+                Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) => {
+                    router.remove(ch_id).await;
+                }
                 Ok(_) => {}
                 Err(_) => break,
             }
         }
-        
+
         // Close channel
         let close_msg = Message::Channel(ChannelMessage::Close { channel_id });
         let _ = transport.send_message(&close_msg).await;
-        
+
         Ok(String::from_utf8_lossy(&output).into_owned())
     }
     
