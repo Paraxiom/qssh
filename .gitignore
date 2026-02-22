@@ -34,4 +34,7 @@ temp_*
 # Build artifacts
 *.so
 *.dylib
-*.dlllean/.lake/
+*.dll
+
+# Lean 4 build artifacts
+lean/.lake/

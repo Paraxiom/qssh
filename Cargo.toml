@@ -7,6 +7,7 @@ license = "MIT OR Apache-2.0"
 description = "Post-quantum secure shell with NIST PQC algorithms (Falcon, SPHINCS+, ML-KEM), configurable security tiers, and quantum-resistant protocol design"
 repository = "https://github.com/Paraxiom/qssh"
 readme = "README.md"
+exclude = ["lean/", "target/package/"]
 
 [workspace]
 
