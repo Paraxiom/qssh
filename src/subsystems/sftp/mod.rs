@@ -73,10 +73,10 @@ impl SftpSubsystem {
 
     fn resolve_path(&self, path: &str) -> PathBuf {
         if path.starts_with('/') {
-            // Absolute path
-            self.root_dir.join(&path[1..])
+            // Absolute path — use as-is (like OpenSSH sftp-server)
+            PathBuf::from(path)
         } else {
-            // Relative path
+            // Relative path — resolve against current directory
             self.sftp_session.current_dir().join(path)
         }
     }
@@ -99,7 +99,26 @@ impl SftpSubsystem {
         log::debug!("[SFTP] Opening file: {:?} with flags {:?}", path, msg.flags);
 
         // Create file handle
-        let handle = FileHandle::open(path.clone(), msg.flags).await?;
+        let handle = match FileHandle::open(path.clone(), msg.flags).await {
+            Ok(h) => h,
+            Err(e) => {
+                log::warn!("[SFTP] Failed to open {:?}: {}", path, e);
+                let code = if e.to_string().contains("No such file") || e.to_string().contains("os error 2") {
+                    StatusCode::NoSuchFile
+                } else if e.to_string().contains("Permission denied") {
+                    StatusCode::PermissionDenied
+                } else {
+                    StatusCode::Failure
+                };
+                let response = SftpMessage::Status {
+                    id: msg.id,
+                    code,
+                    message: format!("{}", e),
+                    language: "en".to_string(),
+                };
+                return Ok(response.to_bytes()?);
+            }
+        };
         let handle_id = self.generate_handle();
         self.handles.insert(handle_id.clone(), handle);
 
@@ -342,13 +361,20 @@ impl SftpSubsystem {
                         }
                         Err(e) => {
                             log::error!("SFTP error: {}", e);
-                            // Send error response
-                            let error_msg = format!("SFTP error: {}", e).into_bytes();
-                            let msg = Message::Channel(ChannelMessage::Data {
-                                channel_id,
-                                data: error_msg,
-                            });
-                            transport.send_message(&msg).await?;
+                            // Send proper SFTP Status error (not raw text)
+                            let status = SftpMessage::Status {
+                                id: 0,
+                                code: StatusCode::Failure,
+                                message: format!("{}", e),
+                                language: "en".to_string(),
+                            };
+                            if let Ok(response) = status.to_bytes() {
+                                let msg = Message::Channel(ChannelMessage::Data {
+                                    channel_id,
+                                    data: response,
+                                });
+                                let _ = transport.send_message(&msg).await;
+                            }
                         }
                     }
                 }
