@@ -201,6 +201,15 @@ pub enum ChannelMessage {
         channel_id: u32,
         exit_code: u32,
     },
+    /// Client requests agent forwarding on a session channel
+    AgentForwardRequest {
+        channel_id: u32,
+    },
+    /// Server acknowledges agent forwarding and provides the socket path
+    AgentForwardSuccess {
+        channel_id: u32,
+        socket_path: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,6 +218,8 @@ pub enum ChannelType {
     DirectTcpIp,
     ForwardedTcpIp,
     X11,
+    /// Agent forwarding channel (carries agent protocol messages)
+    AgentForward,
     DirectTcpip {
         host: String,
         port: u16,

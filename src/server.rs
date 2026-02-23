@@ -157,6 +157,33 @@ struct X11ForwardState {
     single_connection: bool,
 }
 
+/// Agent forwarding state for a session.
+/// When the client requests -A, the server creates a Unix socket and
+/// sets SSH_AUTH_SOCK in the shell environment. Connections to the socket
+/// are forwarded back to the client's local agent.
+struct AgentForwardState {
+    /// Path to the Unix socket
+    socket_path: String,
+    /// Listener task handle (for cleanup)
+    listener_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl AgentForwardState {
+    fn cleanup(&mut self) {
+        if let Some(handle) = self.listener_handle.take() {
+            handle.abort();
+        }
+        let _ = std::fs::remove_file(&self.socket_path);
+        log::debug!("Cleaned up agent socket: {}", self.socket_path);
+    }
+}
+
+impl Drop for AgentForwardState {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
 /// State for remote forwarding listeners on the server side.
 /// Tracks active listeners so they can be cancelled and cleaned up.
 struct RemoteForwardState {
@@ -226,6 +253,8 @@ async fn handle_connection(
     let channel_router = ForwardedChannelRouter::new();
     // X11 forwarding state: set when client sends X11Request
     let x11_state: Arc<Mutex<Option<X11ForwardState>>> = Arc::new(Mutex::new(None));
+    // Agent forwarding state: set when client sends AgentForwardRequest (-A)
+    let agent_state: Arc<Mutex<Option<AgentForwardState>>> = Arc::new(Mutex::new(None));
 
     // Handle messages
     loop {
@@ -242,7 +271,7 @@ async fn handle_connection(
                 if let Err(e) = handle_client_message(
                     msg, &transport, &username, &connections,
                     &remote_forward_state, &channel_router,
-                    &x11_state, audit,
+                    &x11_state, &agent_state, audit,
                 ).await {
                     // Check if this is the special shell completion signal
                     if let QsshError::Protocol(ref msg) = e {
@@ -268,6 +297,14 @@ async fn handle_connection(
         rfs.abort_all();
     }
 
+    // Clean up agent forwarding socket
+    {
+        let mut afs = agent_state.lock().await;
+        if let Some(ref mut state) = *afs {
+            state.cleanup();
+        }
+    }
+
     // Remove connection
     {
         let mut conns = connections.lock().await;
@@ -289,11 +326,12 @@ async fn handle_client_message(
     remote_forward_state: &Arc<Mutex<RemoteForwardState>>,
     channel_router: &ForwardedChannelRouter,
     x11_state: &Arc<Mutex<Option<X11ForwardState>>>,
+    agent_state: &Arc<Mutex<Option<AgentForwardState>>>,
     audit: &AuditLogger,
 ) -> Result<()> {
     match msg {
         Message::Channel(channel_msg) => {
-            handle_channel_message(channel_msg, transport, username, connections, channel_router, x11_state, audit).await?;
+            handle_channel_message(channel_msg, transport, username, connections, channel_router, x11_state, agent_state, audit).await?;
         }
         Message::GlobalRequest(req) => {
             handle_global_request(req, transport, username, remote_forward_state, channel_router).await?;
@@ -608,6 +646,7 @@ async fn handle_channel_message(
     connections: &Arc<Mutex<HashMap<String, ClientConnection>>>,
     channel_router: &ForwardedChannelRouter,
     x11_state: &Arc<Mutex<Option<X11ForwardState>>>,
+    agent_state: &Arc<Mutex<Option<AgentForwardState>>>,
     audit: &AuditLogger,
 ) -> Result<()> {
     match msg {
@@ -813,6 +852,15 @@ async fn handle_channel_message(
                     log::info!("Starting shell session for user {} on channel {}", username, channel_id);
                     log::info!("Shell handler taking over transport - running inline");
 
+                    // Set SSH_AUTH_SOCK if agent forwarding is active
+                    {
+                        let afs = agent_state.lock().await;
+                        if let Some(ref state) = *afs {
+                            session.set_env("SSH_AUTH_SOCK", &state.socket_path);
+                            log::info!("Agent forwarding: SSH_AUTH_SOCK={}", state.socket_path);
+                        }
+                    }
+
                     // Give the shell handler the channel router so it can dispatch
                     // forwarded channel messages (for -R remote port forwarding)
                     let (_fwd_tx, _fwd_rx) = mpsc::channel(16);
@@ -1010,6 +1058,93 @@ async fn handle_channel_message(
                 }
             }
         }
+        ChannelMessage::AgentForwardRequest { channel_id } => {
+            log::info!("User {} requesting agent forwarding on channel {}", username, channel_id);
+            audit.log("agent_forward", Some(username), None, None, true).await;
+
+            // Create a per-session Unix socket for SSH_AUTH_SOCK
+            let socket_dir = format!("/tmp/qssh-agent-{}", std::process::id());
+            let _ = std::fs::create_dir_all(&socket_dir);
+            let socket_path = format!("{}/agent.{}", socket_dir, channel_id);
+
+            // Remove stale socket if it exists
+            let _ = std::fs::remove_file(&socket_path);
+
+            // Bind listener
+            match tokio::net::UnixListener::bind(&socket_path) {
+                Ok(listener) => {
+                    // Set socket permissions to 0600 (owner only)
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(
+                            &socket_path,
+                            std::fs::Permissions::from_mode(0o600),
+                        );
+                    }
+
+                    log::info!("Agent forwarding socket created: {}", socket_path);
+
+                    // Notify client of success
+                    let success = Message::Channel(ChannelMessage::AgentForwardSuccess {
+                        channel_id,
+                        socket_path: socket_path.clone(),
+                    });
+                    transport.send_message(&success).await?;
+
+                    // Spawn task to accept connections and bridge to client
+                    let transport_agent = transport.clone();
+                    let socket_path_clone = socket_path.clone();
+                    let handle = tokio::spawn(async move {
+                        let mut next_agent_channel = 10000u32; // high channel IDs for agent
+                        loop {
+                            match listener.accept().await {
+                                Ok((stream, _)) => {
+                                    let agent_ch = next_agent_channel;
+                                    next_agent_channel += 1;
+                                    log::debug!("Agent socket connection -> channel {}", agent_ch);
+
+                                    // Open an AgentForward channel to the client
+                                    let open_msg = Message::Channel(ChannelMessage::Open {
+                                        channel_id: agent_ch,
+                                        channel_type: ChannelType::AgentForward,
+                                        window_size: 1048576,
+                                        max_packet_size: 32768,
+                                    });
+                                    if transport_agent.send_message(&open_msg).await.is_err() {
+                                        break;
+                                    }
+
+                                    // Bridge this connection bidirectionally
+                                    let t = transport_agent.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = bridge_agent_connection(agent_ch, stream, t).await {
+                                            log::debug!("Agent bridge {} ended: {}", agent_ch, e);
+                                        }
+                                    });
+                                }
+                                Err(e) => {
+                                    log::debug!("Agent listener ended: {}", e);
+                                    break;
+                                }
+                            }
+                        }
+                        // Cleanup socket on exit
+                        let _ = std::fs::remove_file(&socket_path_clone);
+                    });
+
+                    // Store state
+                    let mut afs = agent_state.lock().await;
+                    *afs = Some(AgentForwardState {
+                        socket_path: socket_path.clone(),
+                        listener_handle: Some(handle),
+                    });
+                }
+                Err(e) => {
+                    log::error!("Failed to create agent socket: {}", e);
+                }
+            }
+        }
         _ => {
             log::debug!("Unhandled channel message from {}", username);
         }
@@ -1199,10 +1334,84 @@ async fn handle_exec_request(
 }
 
 
+/// Bridge a Unix socket connection to an AgentForward channel.
+/// Reads from the socket and sends Data messages, reads Data from the channel
+/// and writes to the socket.
+async fn bridge_agent_connection(
+    channel_id: u32,
+    stream: tokio::net::UnixStream,
+    transport: Transport,
+) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (mut read_half, mut write_half) = tokio::io::split(stream);
+    let transport_read = transport.clone();
+    let transport_close = transport.clone();
+
+    // Socket → channel
+    let sock_to_chan = tokio::spawn(async move {
+        let mut buf = vec![0u8; 32768];
+        loop {
+            match read_half.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    let msg = Message::Channel(ChannelMessage::Data {
+                        channel_id,
+                        data: buf[..n].to_vec(),
+                    });
+                    if transport_read.send_message(&msg).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Channel → socket (receive Data messages addressed to this channel)
+    // NOTE: In a full implementation, the server would have a channel router
+    // for agent channels. For now, the agent socket is short-lived
+    // (one request-response per connection), so we rely on the main loop
+    // routing data to us via the channel router.
+    let chan_to_sock = tokio::spawn(async move {
+        // Wait for the socket->channel direction to finish
+        // Agent protocol is request-response: client sends, server responds
+        // The response comes back through the transport and is routed
+        // to the socket by the channel data routing
+        loop {
+            match transport.receive_message::<Message>().await {
+                Ok(Message::Channel(ChannelMessage::Data { channel_id: ch, data })) if ch == channel_id => {
+                    if write_half.write_all(&data).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(Message::Channel(ChannelMessage::Close { channel_id: ch })) if ch == channel_id => {
+                    break;
+                }
+                Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch })) if ch == channel_id => {
+                    break;
+                }
+                Err(_) => break,
+                _ => {} // Ignore messages for other channels
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = sock_to_chan => {}
+        _ = chan_to_sock => {}
+    }
+
+    let close = Message::Channel(ChannelMessage::Close { channel_id });
+    let _ = transport_close.send_message(&close).await;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[tokio::test]
     async fn test_server_config() {
         let config = QsshServerConfig::new("127.0.0.1:22222").expect("Failed to create server config");

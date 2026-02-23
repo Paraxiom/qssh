@@ -121,6 +121,11 @@ impl ShellSessionThread {
         })
     }
     
+    /// Set an extra environment variable on the shell process (before run())
+    pub fn set_env(&mut self, key: &str, value: &str) {
+        self.process.env(key, value);
+    }
+
     /// Set the channel router for dispatching forwarded channel data
     pub fn set_channel_router(
         &mut self,

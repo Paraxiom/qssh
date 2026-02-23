@@ -75,6 +75,10 @@ struct Args {
     #[clap(short = 'Y', long)]
     trusted_x11: bool,
 
+    /// Enable agent forwarding (forwards QSSH_AUTH_SOCK to remote)
+    #[clap(short = 'A', long = "agent-forward")]
+    agent_forward: bool,
+
     /// Verbose output
     #[clap(short, long)]
     verbose: bool,
@@ -404,6 +408,14 @@ async fn main() {
                     match client.enable_x11(args.trusted_x11).await {
                         Ok(()) => info!("X11 forwarding enabled"),
                         Err(e) => eprintln!("Warning: Failed to enable X11 forwarding: {}", e),
+                    }
+                }
+
+                // Enable agent forwarding if requested
+                if args.agent_forward {
+                    match client.enable_agent_forwarding().await {
+                        Ok(()) => info!("Agent forwarding enabled"),
+                        Err(e) => eprintln!("Warning: Failed to enable agent forwarding: {}", e),
                     }
                 }
 

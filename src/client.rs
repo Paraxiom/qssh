@@ -54,6 +54,7 @@ pub struct QsshClient {
     channel_manager: Arc<ChannelManager>,
     vault: Option<Arc<QuantumVault>>,
     x11_forwarder: Option<X11Forwarder>,
+    agent_forward_enabled: bool,
     remote_forward_registry: RemoteForwardRegistry,
     forwarded_channel_router: ForwardedChannelRouter,
     rekey_task: Option<tokio::task::JoinHandle<()>>,
@@ -68,6 +69,7 @@ impl QsshClient {
             channel_manager: Arc::new(ChannelManager::new()),
             vault: None,
             x11_forwarder: None,
+            agent_forward_enabled: false,
             remote_forward_registry: RemoteForwardRegistry::new(),
             forwarded_channel_router: ForwardedChannelRouter::new(),
             rekey_task: None,
@@ -277,6 +279,37 @@ impl QsshClient {
                 self.x11_forwarder = Some(fwd);
             }
         }
+        Ok(())
+    }
+
+    /// Enable agent forwarding.
+    /// Sends an AgentForwardRequest to the server on the session channel.
+    /// The server will create a Unix socket and set SSH_AUTH_SOCK in the
+    /// shell environment. Agent requests from the remote side are forwarded
+    /// back through the channel to the local agent (QSSH_AUTH_SOCK).
+    pub async fn enable_agent_forwarding(&mut self) -> Result<()> {
+        // Check that we have a local agent socket
+        let auth_sock = std::env::var("QSSH_AUTH_SOCK").map_err(|_| {
+            QsshError::Connection("QSSH_AUTH_SOCK not set — is qssh-agent running?".into())
+        })?;
+
+        if !std::path::Path::new(&auth_sock).exists() {
+            return Err(QsshError::Connection(format!(
+                "Agent socket not found: {}", auth_sock
+            )));
+        }
+
+        let transport = self.transport.as_ref()
+            .ok_or_else(|| QsshError::Protocol("Not connected".into()))?;
+
+        // Use channel 0 (session channel) for the request
+        let msg = Message::Channel(ChannelMessage::AgentForwardRequest {
+            channel_id: 0,
+        });
+        transport.send_message(&msg).await?;
+
+        log::info!("Agent forwarding requested (local socket: {})", auth_sock);
+        self.agent_forward_enabled = true;
         Ok(())
     }
 
@@ -710,6 +743,21 @@ impl QsshClient {
                             }
                         });
                     }
+                    // Handle incoming AgentForward channel opens from server
+                    Ok(Message::Channel(ChannelMessage::Open {
+                        channel_id: ch_id,
+                        channel_type: ChannelType::AgentForward,
+                        ..
+                    })) => {
+                        log::info!("Server opened AgentForward channel {}", ch_id);
+                        let transport_agent = transport_read.clone();
+                        let router_agent = router.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_agent_forward_channel(ch_id, Arc::new(transport_agent), router_agent).await {
+                                log::error!("Agent forward channel {} error: {}", ch_id, e);
+                            }
+                        });
+                    }
                     // Route Accept to forwarded/local-forward channel handlers
                     Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch_id, .. })) if ch_id != channel_id => {
                         log::debug!("Routing Accept for channel {} via router", ch_id);
@@ -964,4 +1012,81 @@ fn terminal_size() -> Option<(u16, u16)> {
             None
         }
     }
+}
+
+/// Handle an incoming AgentForward channel from the server.
+/// Connects to the local QSSH_AUTH_SOCK and bridges data bidirectionally.
+async fn handle_agent_forward_channel(
+    channel_id: u32,
+    transport: Arc<Transport>,
+    router: ForwardedChannelRouter,
+) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
+
+    let auth_sock = std::env::var("QSSH_AUTH_SOCK")
+        .map_err(|_| QsshError::Connection("QSSH_AUTH_SOCK not set".into()))?;
+
+    // Accept the channel
+    let accept = Message::Channel(ChannelMessage::Accept {
+        channel_id,
+        sender_channel: channel_id,
+        window_size: 1048576,
+        max_packet_size: 32768,
+    });
+    transport.send_message(&accept).await?;
+
+    // Connect to local agent
+    let agent_stream = UnixStream::connect(&auth_sock).await
+        .map_err(|e| QsshError::Connection(format!("Failed to connect to local agent: {}", e)))?;
+
+    let (mut agent_read, mut agent_write) = tokio::io::split(agent_stream);
+
+    // Register with router for incoming channel data
+    let (data_tx, mut data_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+    router.register(channel_id, data_tx).await;
+
+    // Bridge: channel → agent
+    let transport_to_agent = transport.clone();
+    let chan_to_agent = tokio::spawn(async move {
+        while let Some(data) = data_rx.recv().await {
+            if agent_write.write_all(&data).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Bridge: agent → channel
+    let agent_to_chan = tokio::spawn(async move {
+        let mut buf = vec![0u8; 32768];
+        loop {
+            match agent_read.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    let msg = Message::Channel(ChannelMessage::Data {
+                        channel_id,
+                        data: buf[..n].to_vec(),
+                    });
+                    if transport_to_agent.send_message(&msg).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Wait for either direction to finish
+    tokio::select! {
+        _ = chan_to_agent => {}
+        _ = agent_to_chan => {}
+    }
+
+    // Cleanup
+    router.remove(channel_id).await;
+    let close = Message::Channel(ChannelMessage::Close { channel_id });
+    let _ = transport.send_message(&close).await;
+
+    log::debug!("Agent forward channel {} closed", channel_id);
+    Ok(())
 }

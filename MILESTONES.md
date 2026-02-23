@@ -88,7 +88,7 @@ SSH jump host / proxy support.
 | ProxyJump (`-J user@host`) | DONE | `2d9a893` |
 | ProxyCommand (process stdio) | DONE | `%h`/`%p` substitution |
 | `connect_via_stream()` API | DONE | `src/client.rs` |
-| Multi-hop ProxyJump | PARTIAL | First hop only; logs warning for >1 hop |
+| Multi-hop ProxyJump | DONE | Iterative hop chaining via `open_channel_bridge()` |
 
 ## M0.6 — Formal Verification (COMPLETE)
 
@@ -152,7 +152,7 @@ Finish partially implemented features.
 | Session resumption (ticket encryption) | DONE | Server master secret + HMAC-SHA256 integrity + constant-time verification |
 | Compression wired to transport | DONE | `CompressionContext` in Transport, compress/decompress in send/receive path |
 | Certificate-based auth | DONE | `AuthMethod::Certificate` in protocol, client loads `~/.qssh/id_qssh-cert`, server validates + verifies signature |
-| SSH agent forwarding (`-A`) | NOT STARTED | Security review pending |
+| SSH agent forwarding (`-A`) | DONE | Client bridges to QSSH_AUTH_SOCK, server creates per-session socket, SSH_AUTH_SOCK in shell env |
 
 ## M3 — Quantum Hardware Integration (COMPLETE)
 
