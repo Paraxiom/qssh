@@ -2,6 +2,7 @@
 
 use crate::{
     Result, QsshError,
+    audit::AuditLogger,
     crypto::{PqKeyExchange, SymmetricCrypto},
     transport::{Transport, Message, ChannelMessage, ChannelType, RekeyMessage,
         GlobalRequestMessage, GlobalRequestType, GlobalRequestSuccessMessage},
@@ -31,11 +32,15 @@ pub struct QsshServerConfig {
     pub qkd_key_path: Option<String>,
     /// Path to QKD CA certificate
     pub qkd_ca_path: Option<String>,
+    /// Structured audit logger (hash-chained JSONL)
+    pub audit: AuditLogger,
 }
 
 impl QsshServerConfig {
     pub fn new(listen_addr: &str) -> Result<Self> {
         let host_key = PqKeyExchange::new()?;
+        let audit_path = std::env::var("QSSH_AUDIT_LOG")
+            .unwrap_or_else(|_| "/var/log/qssh/audit.jsonl".to_string());
 
         Ok(Self {
             listen_addr: listen_addr.to_string(),
@@ -48,6 +53,7 @@ impl QsshServerConfig {
             qkd_cert_path: None,
             qkd_key_path: None,
             qkd_ca_path: None,
+            audit: AuditLogger::new(std::path::PathBuf::from(audit_path)),
         })
     }
 
@@ -97,8 +103,9 @@ impl QsshServer {
             let config = self.config.clone();
             let connections = self.connections.clone();
             
+            let addr_str = addr.to_string();
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, config, connections).await {
+                if let Err(e) = handle_connection(stream, config, connections, &addr_str).await {
                     log::error!("Connection error: {}", e);
                 }
             });
@@ -177,14 +184,27 @@ async fn handle_connection(
     stream: TcpStream,
     config: QsshServerConfig,
     connections: Arc<Mutex<HashMap<String, ClientConnection>>>,
+    remote_addr: &str,
 ) -> Result<()> {
+    let audit = &config.audit;
+    audit.log("connect", None, Some(remote_addr), None, true).await;
+
     // Perform handshake
     // For now, recreate the host key since PqKeyExchange doesn't implement Clone
     let host_key = PqKeyExchange::new()?;
     let handshake = ServerHandshake::new(stream, host_key)
         .with_qkd_endpoint(config.qkd_endpoint.clone());
-    let (transport, username) = handshake.perform().await?;
-    
+    let (transport, username) = match handshake.perform().await {
+        Ok(result) => {
+            audit.log("auth", Some(&result.1), Some(remote_addr), Some("handshake success"), true).await;
+            result
+        }
+        Err(e) => {
+            audit.log("auth", None, Some(remote_addr), Some(&format!("handshake failed: {}", e)), false).await;
+            return Err(e);
+        }
+    };
+
     log::info!("User {} authenticated successfully", username);
     
     // Create connection state
@@ -222,7 +242,7 @@ async fn handle_connection(
                 if let Err(e) = handle_client_message(
                     msg, &transport, &username, &connections,
                     &remote_forward_state, &channel_router,
-                    &x11_state,
+                    &x11_state, audit,
                 ).await {
                     // Check if this is the special shell completion signal
                     if let QsshError::Protocol(ref msg) = e {
@@ -254,6 +274,7 @@ async fn handle_connection(
         conns.remove(&username);
     }
 
+    audit.log("disconnect", Some(&username), Some(remote_addr), None, true).await;
     log::info!("User {} disconnected", username);
 
     Ok(())
@@ -268,10 +289,11 @@ async fn handle_client_message(
     remote_forward_state: &Arc<Mutex<RemoteForwardState>>,
     channel_router: &ForwardedChannelRouter,
     x11_state: &Arc<Mutex<Option<X11ForwardState>>>,
+    audit: &AuditLogger,
 ) -> Result<()> {
     match msg {
         Message::Channel(channel_msg) => {
-            handle_channel_message(channel_msg, transport, username, connections, channel_router, x11_state).await?;
+            handle_channel_message(channel_msg, transport, username, connections, channel_router, x11_state, audit).await?;
         }
         Message::GlobalRequest(req) => {
             handle_global_request(req, transport, username, remote_forward_state, channel_router).await?;
@@ -586,6 +608,7 @@ async fn handle_channel_message(
     connections: &Arc<Mutex<HashMap<String, ClientConnection>>>,
     channel_router: &ForwardedChannelRouter,
     x11_state: &Arc<Mutex<Option<X11ForwardState>>>,
+    audit: &AuditLogger,
 ) -> Result<()> {
     match msg {
         ChannelMessage::Open { channel_id, channel_type, window_size, max_packet_size } => {
@@ -819,13 +842,15 @@ async fn handle_channel_message(
         }
         ChannelMessage::ExecRequest { channel_id, command } => {
             log::info!("User {} exec on channel {}: {}", username, channel_id, command);
+            audit.log("exec", Some(username), None, Some(&command), true).await;
 
             // Spawn exec in background so the main message loop keeps running
             // (allows concurrent channel handling, e.g. -L DirectTcpip opens)
             let transport_exec = transport.clone();
             let username_exec = username.to_string();
+            let audit_exec = audit.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_exec_request(channel_id, command, &transport_exec, &username_exec).await {
+                if let Err(e) = handle_exec_request(channel_id, command, &transport_exec, &username_exec, &audit_exec).await {
                     log::error!("Exec error for {}: {}", username_exec, e);
                 }
             });
@@ -1111,6 +1136,7 @@ async fn handle_exec_request(
     command: String,
     transport: &Transport,
     username: &str,
+    audit: &AuditLogger,
 ) -> Result<()> {
     log::info!("User {} executing: {}", username, command);
     
@@ -1129,7 +1155,7 @@ async fn handle_exec_request(
                 });
                 transport.send_message(&response).await?;
             }
-            
+
             if !output.stderr.is_empty() {
                 let error_response = Message::Channel(ChannelMessage::Data {
                     channel_id,
@@ -1137,6 +1163,16 @@ async fn handle_exec_request(
                 });
                 transport.send_message(&error_response).await?;
             }
+
+            // Send exit status
+            let exit_code = output.status.code().unwrap_or(255) as u32;
+            audit.log("exec_exit", Some(username), None,
+                Some(&format!("exit_code={}", exit_code)), exit_code == 0).await;
+            let exit_msg = Message::Channel(ChannelMessage::ExitStatus {
+                channel_id,
+                exit_code,
+            });
+            transport.send_message(&exit_msg).await?;
         }
         Err(e) => {
             let error_msg = format!("Command failed: {}\n", e).into_bytes();
@@ -1145,13 +1181,20 @@ async fn handle_exec_request(
                 data: error_msg,
             });
             transport.send_message(&response).await?;
+
+            // Send exit status 255 for spawn failure
+            let exit_msg = Message::Channel(ChannelMessage::ExitStatus {
+                channel_id,
+                exit_code: 255,
+            });
+            transport.send_message(&exit_msg).await?;
         }
     }
-    
+
     // Send EOF
     let eof = Message::Channel(ChannelMessage::Eof { channel_id });
     transport.send_message(&eof).await?;
-    
+
     Ok(())
 }
 

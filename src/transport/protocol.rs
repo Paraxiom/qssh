@@ -196,6 +196,11 @@ pub enum ChannelMessage {
         width_pixels: u32,
         height_pixels: u32,
     },
+    /// Exit status from remote command (like SSH's exit-status request)
+    ExitStatus {
+        channel_id: u32,
+        exit_code: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

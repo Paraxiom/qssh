@@ -752,10 +752,15 @@ impl ServerHandshake {
             }
             AuthMethod::Password { password_hash } => {
                 if let Some(password_mgr) = &self.password_manager {
-                    // The password_hash is actually the password (client should hash it)
-                    // For now, we'll treat it as plaintext and hash it server-side
-                    let password = String::from_utf8_lossy(password_hash);
-                    match password_mgr.verify_password(&auth_msg.username, &password).await {
+                    // password_hash is the plaintext password (encrypted in transit)
+                    let mut password = String::from_utf8_lossy(password_hash).into_owned();
+                    let result = password_mgr.verify_password(&auth_msg.username, &password).await;
+                    // Zeroize password from memory immediately after verification
+                    {
+                        use zeroize::Zeroize;
+                        password.zeroize();
+                    }
+                    match result {
                         Ok(true) => {
                             log::info!("User {} authenticated successfully with password", auth_msg.username);
                             true

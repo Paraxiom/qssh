@@ -192,6 +192,13 @@ impl QsshClient {
 
         log::info!("Handshake completed successfully");
 
+        // Zeroize password from config now that auth is complete
+        if let Some(ref mut pw) = self.config.password {
+            use zeroize::Zeroize;
+            pw.zeroize();
+        }
+        self.config.password = None;
+
         self.transport = Some(transport);
 
         // Set up port forwards
@@ -399,8 +406,10 @@ impl QsshClient {
         self.handle_shell_session(channel_id).await
     }
     
-    /// Execute a command
-    pub async fn exec(&self, command: &str) -> Result<String> {
+    /// Execute a command and return (output, exit_code).
+    /// Exit code is 0 on success, or the remote process exit code.
+    /// Returns 255 if the server didn't send an exit status.
+    pub async fn exec_with_status(&self, command: &str) -> Result<(String, u32)> {
         let transport = self.transport.as_ref()
             .ok_or_else(|| QsshError::Protocol("Not connected".into()))?;
         let router = self.forwarded_channel_router.clone();
@@ -457,6 +466,7 @@ impl QsshClient {
 
         // Collect output
         let mut output = Vec::new();
+        let mut exit_code: u32 = 255; // default if server doesn't send ExitStatus
         let timeout = std::time::Duration::from_secs(30);
         let start = std::time::Instant::now();
 
@@ -468,6 +478,9 @@ impl QsshClient {
             match transport.receive_message::<Message>().await {
                 Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data })) if ch_id == channel_id => {
                     output.extend_from_slice(&data);
+                }
+                Ok(Message::Channel(ChannelMessage::ExitStatus { channel_id: ch_id, exit_code: code })) if ch_id == channel_id => {
+                    exit_code = code;
                 }
                 Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id })) if ch_id == channel_id => {
                     break;
@@ -497,7 +510,13 @@ impl QsshClient {
         let close_msg = Message::Channel(ChannelMessage::Close { channel_id });
         let _ = transport.send_message(&close_msg).await;
 
-        Ok(String::from_utf8_lossy(&output).into_owned())
+        Ok((String::from_utf8_lossy(&output).into_owned(), exit_code))
+    }
+
+    /// Execute a command (returns output only, for backward compatibility)
+    pub async fn exec(&self, command: &str) -> Result<String> {
+        let (output, _exit_code) = self.exec_with_status(command).await?;
+        Ok(output)
     }
     
     /// Close the connection

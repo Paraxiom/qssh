@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use sha3::{Sha3_256, Digest};
+use argon2::{Argon2, Algorithm, Version, Params, PasswordHasher, PasswordVerifier};
+use argon2::password_hash::{SaltString, rand_core::OsRng};
 
 /// Authorized key entry
 #[derive(Debug, Clone)]
@@ -293,26 +295,49 @@ impl PasswordAuthManager {
         Ok(())
     }
 
-    /// Verify password for user
+    /// Verify password for user.
+    /// Supports both Argon2id (PHC format, starting with `$argon2id$`) and
+    /// legacy SHA3-256 hex hashes for backward compatibility.
     pub async fn verify_password(&self, username: &str, password: &str) -> Result<bool> {
         let passwords = self.passwords.read().await;
 
         if let Some(stored_hash) = passwords.get(username) {
-            let password_hash = hash_password(password);
-            Ok(stored_hash == &password_hash)
+            if stored_hash.starts_with("$argon2id$") {
+                // New Argon2id PHC string format
+                Ok(verify_password_argon2id(password, stored_hash))
+            } else {
+                // Legacy SHA3-256 hex hash — verify then auto-upgrade
+                let legacy_hash = hash_password_sha3(password);
+                if stored_hash == &legacy_hash {
+                    // Upgrade to Argon2id on successful legacy login
+                    drop(passwords); // release read lock
+                    if let Ok(new_hash) = hash_password_argon2id(password) {
+                        let mut passwords = self.passwords.write().await;
+                        passwords.insert(username.to_string(), new_hash);
+                        // Best-effort save — don't fail login if save fails
+                        drop(passwords);
+                        let _ = self.save_passwords().await;
+                    }
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
         } else {
-            // User not found
+            // User not found — constant-time-ish: still hash to avoid timing leak
+            let _ = hash_password_argon2id(password);
             Ok(false)
         }
     }
 
-    /// Set password for user (admin function)
+    /// Set password for user (admin function). Uses Argon2id with random salt.
     pub async fn set_password(&self, username: &str, password: &str) -> Result<()> {
-        let password_hash = hash_password(password);
+        let password_hash = hash_password_argon2id(password)
+            .map_err(|e| QsshError::Crypto(format!("Failed to hash password: {}", e)))?;
 
         {
             let mut passwords = self.passwords.write().await;
-            passwords.insert(username.to_string(), password_hash.clone());
+            passwords.insert(username.to_string(), password_hash);
         }
 
         // Save to file
@@ -326,7 +351,7 @@ impl PasswordAuthManager {
         let mut content = String::new();
 
         content.push_str("# QSSH Password File\n");
-        content.push_str("# Format: username:sha3_256_hash\n\n");
+        content.push_str("# Format: username:argon2id_phc_string (or legacy sha3_256_hex)\n\n");
 
         for (username, hash) in passwords.iter() {
             content.push_str(&format!("{}:{}\n", username, hash));
@@ -337,12 +362,42 @@ impl PasswordAuthManager {
     }
 }
 
-/// Hash password using SHA3-256
-pub fn hash_password(password: &str) -> String {
+/// Hash password using Argon2id with random 16-byte salt.
+/// Returns a PHC string: `$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>`
+///
+/// Parameters: m=19 MiB, t=2 iterations, p=1 lane (OWASP minimum recommendation)
+pub fn hash_password_argon2id(password: &str) -> std::result::Result<String, String> {
+    let salt = SaltString::generate(&mut OsRng);
+    let params = Params::new(19 * 1024, 2, 1, Some(32))
+        .map_err(|e| format!("Argon2 params error: {}", e))?;
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let hash = argon2.hash_password(password.as_bytes(), &salt)
+        .map_err(|e| format!("Argon2 hash error: {}", e))?;
+    Ok(hash.to_string())
+}
+
+/// Verify a password against an Argon2id PHC string.
+pub fn verify_password_argon2id(password: &str, phc_string: &str) -> bool {
+    let parsed = match argon2::PasswordHash::new(phc_string) {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok()
+}
+
+/// Legacy SHA3-256 password hash (for backward compatibility with existing password files).
+pub fn hash_password_sha3(password: &str) -> String {
     let mut hasher = Sha3_256::new();
     hasher.update(password.as_bytes());
     let result = hasher.finalize();
     hex::encode(result)
+}
+
+/// Hash password — public API, now uses Argon2id.
+/// Callers that need the legacy SHA3-256 hash should call `hash_password_sha3()`.
+pub fn hash_password(password: &str) -> String {
+    hash_password_argon2id(password)
+        .unwrap_or_else(|_| hash_password_sha3(password))
 }
 
 /// Create default password manager
@@ -356,25 +411,105 @@ pub fn system_password_auth() -> PasswordAuthManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_parse_simple_key() {
         let mgr = AuthorizedKeysManager::new(PathBuf::from("/tmp"));
         let line = "qssh-falcon512 AAAAB3NzaC1yc2EAAAADAQABAAABAQC... user@host";
-        
+
         let key = mgr.parse_key_line(line).unwrap();
         assert_eq!(key.key_type, "qssh-falcon512");
         assert_eq!(key.comment.as_deref(), Some("user@host"));
     }
-    
+
     #[test]
     fn test_parse_key_with_options() {
         let mgr = AuthorizedKeysManager::new(PathBuf::from("/tmp"));
         let line = "command=\"/bin/date\",no-pty qssh-sphincs+ AAAAB3NzaC...";
-        
+
         let key = mgr.parse_key_line(line).unwrap();
         assert_eq!(key.key_type, "qssh-sphincs+");
         assert_eq!(key.options.command.as_deref(), Some("/bin/date"));
         assert!(!key.options.pty);
+    }
+
+    #[test]
+    fn test_argon2id_hash_and_verify() {
+        let phc = hash_password_argon2id("test-password-2026").unwrap();
+        assert!(phc.starts_with("$argon2id$"));
+        assert!(verify_password_argon2id("test-password-2026", &phc));
+        assert!(!verify_password_argon2id("wrong-password", &phc));
+    }
+
+    #[test]
+    fn test_argon2id_unique_salts() {
+        let h1 = hash_password_argon2id("same-password").unwrap();
+        let h2 = hash_password_argon2id("same-password").unwrap();
+        // Different salts produce different PHC strings
+        assert_ne!(h1, h2);
+        // Both still verify
+        assert!(verify_password_argon2id("same-password", &h1));
+        assert!(verify_password_argon2id("same-password", &h2));
+    }
+
+    #[test]
+    fn test_legacy_sha3_still_works() {
+        let legacy = hash_password_sha3("old-password");
+        // Legacy hashes are 64-char hex (SHA3-256)
+        assert_eq!(legacy.len(), 64);
+        assert!(!legacy.starts_with("$argon2id$"));
+    }
+
+    #[test]
+    fn test_hash_password_public_api_returns_argon2id() {
+        let h = hash_password("new-password");
+        assert!(h.starts_with("$argon2id$"));
+    }
+
+    #[tokio::test]
+    async fn test_password_manager_argon2id() {
+        let dir = std::env::temp_dir().join("qssh_test_argon2id");
+        let _ = std::fs::create_dir_all(&dir);
+        let pw_file = dir.join("passwords");
+        let _ = std::fs::write(&pw_file, "");
+
+        let mgr = PasswordAuthManager::new(pw_file.clone());
+        mgr.set_password("alice", "quantum-secure!").await.unwrap();
+
+        // Reload and verify
+        let mgr2 = PasswordAuthManager::new(pw_file.clone());
+        mgr2.load_passwords().await.unwrap();
+        assert!(mgr2.verify_password("alice", "quantum-secure!").await.unwrap());
+        assert!(!mgr2.verify_password("alice", "wrong").await.unwrap());
+        assert!(!mgr2.verify_password("bob", "quantum-secure!").await.unwrap());
+
+        // Verify file contains Argon2id PHC string
+        let content = std::fs::read_to_string(&pw_file).unwrap();
+        assert!(content.contains("$argon2id$"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_legacy_sha3_auto_upgrade() {
+        let dir = std::env::temp_dir().join("qssh_test_upgrade");
+        let _ = std::fs::create_dir_all(&dir);
+        let pw_file = dir.join("passwords");
+
+        // Write a legacy SHA3-256 hash
+        let legacy_hash = hash_password_sha3("old-password");
+        std::fs::write(&pw_file, format!("bob:{}\n", legacy_hash)).unwrap();
+
+        let mgr = PasswordAuthManager::new(pw_file.clone());
+        mgr.load_passwords().await.unwrap();
+
+        // Verify with legacy hash works
+        assert!(mgr.verify_password("bob", "old-password").await.unwrap());
+
+        // After successful login, file should now contain Argon2id
+        let content = std::fs::read_to_string(&pw_file).unwrap();
+        assert!(content.contains("$argon2id$"), "Password should have been auto-upgraded");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

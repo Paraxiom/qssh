@@ -409,8 +409,13 @@ async fn main() {
 
                 // Execute command or start shell
                 if let Some(ref command) = args.command {
-                    match client.exec(command).await {
-                        Ok(output) => print!("{}", output),
+                    match client.exec_with_status(command).await {
+                        Ok((output, exit_code)) => {
+                            print!("{}", output);
+                            if exit_code != 0 && reconnect_config.is_none() && !has_remote_forwards && !has_forwards {
+                                process::exit(exit_code as i32);
+                            }
+                        }
                         Err(e) => {
                             eprintln!("Command execution failed: {}", e);
                             if reconnect_config.is_none() { process::exit(1); }

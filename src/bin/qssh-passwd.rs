@@ -3,6 +3,7 @@
 use clap::Parser;
 use qssh::auth::PasswordAuthManager;
 use std::path::PathBuf;
+use zeroize::Zeroize;
 
 #[derive(Parser, Debug)]
 #[clap(name = "qssh-passwd")]
@@ -41,9 +42,12 @@ async fn main() {
     if args.check {
         // Check if user has a password set
         eprint!("Enter password to verify: ");
-        let password = rpassword::read_password().unwrap();
+        let mut password = rpassword::read_password().unwrap();
 
-        match manager.verify_password(&args.username, &password).await {
+        let result = manager.verify_password(&args.username, &password).await;
+        password.zeroize();
+
+        match result {
             Ok(true) => {
                 println!("Password correct for user {}", args.username);
                 std::process::exit(0);
@@ -71,15 +75,18 @@ async fn main() {
     } else {
         // Set password for user
         eprint!("Enter new password for {}: ", args.username);
-        let password = rpassword::read_password().unwrap();
+        let mut password = rpassword::read_password().unwrap();
 
         eprint!("Confirm password: ");
-        let confirm = rpassword::read_password().unwrap();
+        let mut confirm = rpassword::read_password().unwrap();
 
         if password != confirm {
+            password.zeroize();
+            confirm.zeroize();
             eprintln!("Passwords do not match");
             std::process::exit(1);
         }
+        confirm.zeroize();
 
         if password.is_empty() {
             eprintln!("Password cannot be empty");
@@ -87,7 +94,10 @@ async fn main() {
         }
 
         // Set the password
-        match manager.set_password(&args.username, &password).await {
+        let result = manager.set_password(&args.username, &password).await;
+        password.zeroize();
+
+        match result {
             Ok(()) => {
                 println!("Password set for user {}", args.username);
                 println!("Password file: {}", password_file);

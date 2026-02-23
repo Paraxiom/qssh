@@ -2,7 +2,7 @@
 
 **Last updated**: 2026-02-23
 **Current version**: 0.3.1 (published on crates.io)
-**Tests**: 145 unit passing (+ 18 QKD feature tests), 0 ignored, 0 failed
+**Tests**: 154 unit passing (+ 18 QKD feature tests), 0 ignored, 0 failed
 **Warnings**: 0 (enforced in CI)
 **Deployed**: Alice (51.79.26.123), Docker container `qsshd-server` on port 22222
 **Crypto backend**: Pure Rust (fn-dsa 0.3 + slh-dsa 0.0.3) — zero C FFI
@@ -165,19 +165,20 @@ Software interfaces for quantum hardware — ready for real endpoints.
 | HSM key storage | DONE | `KeyStorageBackend` trait — Software, File, PKCS#11 (stub) backends |
 | BB84 protocol | DONE | Noise model, information reconciliation, QBER feedback, tier integration |
 
-## M4 — Enterprise & Compliance
+## M4 — Enterprise & Compliance (IN PROGRESS)
 
-Long-term goals for enterprise adoption.
+Production hardening and compliance features.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
+| Password hardening (Argon2id) | DONE | PHC string format, random salt, auto-upgrade from SHA3-256 |
+| Exit status propagation | DONE | `ExitStatus` variant in protocol, server sends exit code, client `exec_with_status()` |
+| Audit logging (structured) | DONE | `AuditLogger` — hash-chained JSONL, wired into server (connect/auth/exec/disconnect) |
+| Password zeroization | DONE | `zeroize` crate on client config, server handshake, `qssh-passwd` binary |
+| Secure password input masking | DONE | `rpassword` already suppresses echo (pre-existing) |
 | FIPS 140-3 validation | NOT STARTED | Requires formal process |
-| Audit logging (structured) | PARTIAL | Hash chain in `qssh-sign`, not in core |
 | P2P discovery | STUB | `src/p2p/mod.rs` scaffolding only |
 | Blockchain-based key registry | STUB | QuantumHarmony integration planned |
-| Password hardening (Argon2) | NOT STARTED | Currently SHA3-256 |
-| Exit status propagation | NOT STARTED | Remote command exit codes not forwarded |
-| Secure password input masking | NOT STARTED | Terminal echo not suppressed |
 
 ---
 
@@ -188,7 +189,8 @@ src/
   bin/              9 binaries (qssh, qsshd, qscp, qssh-keygen, qssh-passwd,
                     qssh-agent, qssh-add, qssh-sign, qssh-node) + qsshpass
   agent/            SSH agent socket
-  auth.rs           Public key + password auth
+  audit.rs          Hash-chained JSONL audit logging
+  auth.rs           Public key + password auth (Argon2id)
   certificate.rs    Certificate data model (not in handshake yet)
   client.rs         QsshClient (connect, connect_via_stream, shell session)
   compression.rs    zlib/zstd/lz4

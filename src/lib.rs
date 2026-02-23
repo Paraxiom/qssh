@@ -18,6 +18,7 @@ pub mod agent;
 pub mod x11;
 pub mod pty;
 pub mod auth;
+pub mod audit;
 pub mod vault;
 pub mod p2p;
 pub mod pty_thread;
