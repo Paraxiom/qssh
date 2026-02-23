@@ -123,6 +123,10 @@ pub enum AuthMethod {
     Password {
         password_hash: Vec<u8>,
     },
+    Certificate {
+        /// Serialized SshCertificate (bincode)
+        certificate_data: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

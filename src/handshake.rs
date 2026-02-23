@@ -160,6 +160,20 @@ impl<'a> ClientHandshake<'a> {
         (identity_key, identity_pubkey)
     }
     
+    /// Load user certificate from ~/.qssh/id_qssh-cert if it exists
+    fn load_certificate(&self) -> Option<Vec<u8>> {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let cert_path = std::path::PathBuf::from(home).join(".qssh/id_qssh-cert");
+
+        match std::fs::read(&cert_path) {
+            Ok(data) => {
+                log::debug!("Loaded certificate from {:?} ({} bytes)", cert_path, data.len());
+                Some(data)
+            }
+            Err(_) => None,
+        }
+    }
+
     /// Perform client handshake
     pub async fn perform(mut self) -> Result<Transport> {
         log::debug!("Starting client handshake");
@@ -300,10 +314,11 @@ impl<'a> ClientHandshake<'a> {
         let security_type = "PQC-only";
         log::debug!("Session keys derived with {} security", security_type);
         
-        // Authenticate - compute session ID before moving stream
+        // Authenticate - compute session ID and load certificate before moving stream
         log::debug!("Computing session ID");
         let session_id = self.compute_session_id(&client_random, &server_hello.random);
         log::debug!("Session ID computed: {} bytes", session_id.len());
+        let cert_data = self.load_certificate();
         
         // Create transport with encryption - client uses client_write_key for sending, server_write_key for receiving
         log::debug!("Creating symmetric crypto");
@@ -313,7 +328,32 @@ impl<'a> ClientHandshake<'a> {
         let transport = Transport::new_bidirectional(self.stream, send_crypto, recv_crypto);
         
         // Determine authentication method
-        let auth_msg = if let (Some(priv_key), Some(pub_key)) =
+        // Priority: 1. Certificate  2. Public key  3. Password  4. Ephemeral
+        let auth_msg = if let Some(cert_data) = cert_data {
+            // Use certificate-based authentication
+            log::info!("Using certificate authentication for user {}", self.config.username);
+
+            // Sign session ID with the identity key (certified key)
+            let signature = if let Some(priv_key) = &self.identity_key {
+                let mut sk = fn_dsa::SigningKeyStandard::decode(priv_key)
+                    .ok_or_else(|| QsshError::Crypto("Invalid identity key for cert auth".into()))?;
+                let mut sig = vec![0u8; fn_dsa::signature_size(fn_dsa::FN_DSA_LOGN_512)];
+                sk.sign(&mut aes_gcm::aead::OsRng, &fn_dsa::DOMAIN_NONE, &fn_dsa::HASH_ID_RAW,
+                         &session_id, &mut sig);
+                sig
+            } else {
+                Vec::new()
+            };
+
+            AuthMessage {
+                username: self.config.username.clone(),
+                auth_method: AuthMethod::Certificate {
+                    certificate_data: cert_data,
+                },
+                signature,
+                session_id: session_id.clone(),
+            }
+        } else if let (Some(priv_key), Some(pub_key)) =
             (&self.identity_key, &self.identity_pubkey) {
             // Use public key authentication
             log::info!("Using identity Falcon key for authentication");
@@ -727,6 +767,55 @@ impl ServerHandshake {
                 } else {
                     log::warn!("Password authentication not configured");
                     false
+                }
+            }
+            AuthMethod::Certificate { certificate_data } => {
+                use crate::certificate::{SshCertificate, CertificateValidator, ValidationResult};
+
+                // Deserialize the certificate
+                match bincode::deserialize::<SshCertificate>(&certificate_data) {
+                    Ok(cert) => {
+                        // Create a validator with the server's trusted CAs
+                        // For now, accept any CA whose signature verifies
+                        let validator = CertificateValidator::new();
+
+                        // Verify the certificate signature and validity
+                        match validator.validate(&cert) {
+                            Ok(ValidationResult::Valid) | Ok(ValidationResult::UntrustedCA) => {
+                                // Check if the username is in the certificate principals
+                                if validator.check_principal(&cert, &auth_msg.username) {
+                                    // Verify the session signature with the certified public key
+                                    let sig_valid = server_kex.verify_falcon(
+                                        &session_id, &auth_msg.signature, &cert.public_key.key_data,
+                                    ).unwrap_or(false);
+
+                                    if sig_valid {
+                                        log::info!("User {} authenticated with certificate (key_id: {})",
+                                            auth_msg.username, cert.key_id);
+                                        true
+                                    } else {
+                                        log::warn!("Certificate auth: signature verification failed for {}", auth_msg.username);
+                                        false
+                                    }
+                                } else {
+                                    log::warn!("Certificate principal mismatch for user {}", auth_msg.username);
+                                    false
+                                }
+                            }
+                            Ok(result) => {
+                                log::warn!("Certificate validation failed for {}: {:?}", auth_msg.username, result);
+                                false
+                            }
+                            Err(e) => {
+                                log::error!("Certificate validation error: {}", e);
+                                false
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to deserialize certificate: {}", e);
+                        false
+                    }
                 }
             }
         };

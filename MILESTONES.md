@@ -140,19 +140,19 @@ Fix issues from `PRODUCTION_ISSUES.md` before wider release.
 | Remove `src/qkd.disabled/` or document as experimental | DONE (dir doesn't exist) | Medium |
 | Update `PRODUCTION_ISSUES.md` (stale entries) | TODO | Low |
 
-## M2 — Incomplete Features
+## M2 — Incomplete Features (IN PROGRESS)
 
 Finish partially implemented features.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Connection multiplexing (full) | PARTIAL | Bidirectional data forwarding fixed; needs end-to-end integration test |
-| X11 forwarding | PARTIAL | Listener works, server-side channel not wired |
-| Multi-hop ProxyJump | PARTIAL | First hop only |
-| Session resumption (ticket encryption) | PARTIAL | Encryption key may be placeholder |
-| Compression wired to transport | PARTIAL | Algorithms implemented, not in default transport |
+| Connection multiplexing (full) | DONE | Bidirectional data forwarding fixed (M1) |
+| X11 forwarding | DONE | Server-side handler wired — listener, X11 channel bridging, DISPLAY state |
+| Multi-hop ProxyJump | DONE | Iterative hop chaining via `open_channel_bridge()` + `connect_via_stream()` |
+| Session resumption (ticket encryption) | DONE | Server master secret + HMAC-SHA256 integrity + constant-time verification |
+| Compression wired to transport | DONE | `CompressionContext` in Transport, compress/decompress in send/receive path |
+| Certificate-based auth | DONE | `AuthMethod::Certificate` in protocol, client loads `~/.qssh/id_qssh-cert`, server validates + verifies signature |
 | SSH agent forwarding (`-A`) | NOT STARTED | Security review pending |
-| Certificate-based auth | NOT STARTED | Data model exists, not in handshake |
 
 ## M3 — Quantum Hardware Integration
 

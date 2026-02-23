@@ -90,6 +90,8 @@ pub struct SessionCache {
     default_lifetime: Duration,
     /// Cache directory
     cache_dir: PathBuf,
+    /// Server master secret for ticket encryption and HMAC (None = client-only cache)
+    server_secret: Option<[u8; 32]>,
 }
 
 /// Cached session information
@@ -106,7 +108,7 @@ struct CachedSession {
 }
 
 impl SessionCache {
-    /// Create new session cache
+    /// Create new session cache (client-only, no ticket signing)
     pub fn new(cache_dir: PathBuf) -> Result<Self> {
         // Ensure cache directory exists
         std::fs::create_dir_all(&cache_dir)
@@ -117,6 +119,21 @@ impl SessionCache {
             max_sessions: 100,
             default_lifetime: Duration::from_secs(48 * 3600), // 48 hours
             cache_dir,
+            server_secret: None,
+        })
+    }
+
+    /// Create new session cache with server master secret (enables ticket signing/verification)
+    pub fn new_server(cache_dir: PathBuf, server_secret: [u8; 32]) -> Result<Self> {
+        std::fs::create_dir_all(&cache_dir)
+            .map_err(|e| QsshError::Config(format!("Failed to create session cache dir: {}", e)))?;
+
+        Ok(Self {
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            max_sessions: 100,
+            default_lifetime: Duration::from_secs(48 * 3600),
+            cache_dir,
+            server_secret: Some(server_secret),
         })
     }
 
@@ -134,8 +151,8 @@ impl SessionCache {
         let state_bytes = bincode::serialize(&state)
             .map_err(|e| QsshError::Protocol(format!("Failed to serialize session state: {}", e)))?;
 
-        // Generate encryption key from session ID
-        let encryption_key = derive_ticket_key(&session_id);
+        // Generate encryption key from session ID + server secret
+        let encryption_key = derive_ticket_key(&session_id, self.server_secret.as_ref());
 
         // Encrypt state
         let nonce = generate_nonce();
@@ -149,8 +166,8 @@ impl SessionCache {
             salt,
         };
 
-        // Create ticket
-        let ticket = SessionTicket {
+        // Create ticket (signature placeholder, computed below)
+        let mut ticket = SessionTicket {
             session_id: session_id.clone(),
             server_id: server_id.to_string(),
             username: username.to_string(),
@@ -160,8 +177,11 @@ impl SessionCache {
             pq_algorithm,
             session_keys,
             nonce,
-            signature: vec![0; 64], // Would be actual signature
+            signature: Vec::new(),
         };
+
+        // Compute HMAC-SHA256 over ticket fields for integrity
+        ticket.signature = compute_ticket_hmac(&ticket, self.server_secret.as_ref());
 
         // Cache the session
         let cached = CachedSession {
@@ -184,6 +204,12 @@ impl SessionCache {
         // Check if ticket is expired
         if is_ticket_expired(ticket) {
             return Err(QsshError::Protocol("Session ticket expired".into()));
+        }
+
+        // Verify HMAC integrity
+        let expected_hmac = compute_ticket_hmac(ticket, self.server_secret.as_ref());
+        if !constant_time_eq(&ticket.signature, &expected_hmac) {
+            return Err(QsshError::Protocol("Session ticket signature invalid".into()));
         }
 
         // Check if session exists in cache
@@ -251,7 +277,7 @@ impl SessionCache {
         }
 
         // Decrypt state
-        let encryption_key = derive_ticket_key(&ticket.session_id);
+        let encryption_key = derive_ticket_key(&ticket.session_id, self.server_secret.as_ref());
         let state_bytes = decrypt_state(&ticket.encrypted_state, &encryption_key, &ticket.nonce)?;
 
         let state: SessionState = bincode::deserialize(&state_bytes)
@@ -434,11 +460,46 @@ fn is_ticket_expired(ticket: &SessionTicket) -> bool {
     now > ticket.issued_at + ticket.lifetime
 }
 
-fn derive_ticket_key(session_id: &str) -> Vec<u8> {
+fn derive_ticket_key(session_id: &str, server_secret: Option<&[u8; 32]>) -> Vec<u8> {
     let mut hasher = Sha256::new();
+    if let Some(secret) = server_secret {
+        hasher.update(secret);
+    }
     hasher.update(session_id.as_bytes());
     hasher.update(b"QSSH_SESSION_TICKET");
     hasher.finalize().to_vec()
+}
+
+/// Compute HMAC-SHA256 over ticket fields (excluding the signature field itself)
+fn compute_ticket_hmac(ticket: &SessionTicket, server_secret: Option<&[u8; 32]>) -> Vec<u8> {
+    use hmac::{Hmac, Mac};
+    type HmacSha256 = Hmac<Sha256>;
+
+    // Use server secret as HMAC key, or a zero key for client-only caches
+    let key = server_secret.map(|s| s.as_slice()).unwrap_or(&[0u8; 32]);
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC key length is valid");
+
+    // Feed all ticket fields except signature
+    mac.update(ticket.session_id.as_bytes());
+    mac.update(ticket.server_id.as_bytes());
+    mac.update(ticket.username.as_bytes());
+    mac.update(&ticket.issued_at.to_be_bytes());
+    mac.update(&ticket.lifetime.to_be_bytes());
+    mac.update(&ticket.encrypted_state);
+    mac.update(&ticket.nonce);
+    mac.update(&ticket.session_keys.symmetric_key);
+    mac.update(&ticket.session_keys.mac_key);
+    mac.update(&ticket.session_keys.salt);
+
+    mac.finalize().into_bytes().to_vec()
+}
+
+/// Constant-time comparison to prevent timing attacks on HMAC verification
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 fn derive_session_key(master_key: &[u8], salt: &[u8], context: &[u8]) -> Vec<u8> {

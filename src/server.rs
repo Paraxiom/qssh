@@ -119,6 +119,8 @@ struct Channel {
     _channel_type: ChannelType,
     /// PTY info stored from PtyRequest, used when ShellRequest arrives
     pty: Option<PtyInfo>,
+    /// X11 display string, set when X11Request is received
+    x11_display: Option<X11Display>,
 }
 
 /// PTY settings received from PtyRequest
@@ -127,6 +129,25 @@ struct PtyInfo {
     term: String,
     width: u16,
     height: u16,
+}
+
+/// X11 display to set in the shell environment
+#[derive(Clone)]
+#[allow(dead_code)]
+struct X11Display {
+    display: String,
+}
+
+/// X11 forwarding state for a session channel on the server side.
+/// The server listens on localhost:6000+display and forwards connections
+/// to the client via X11 channels.
+#[derive(Clone)]
+#[allow(dead_code)]
+struct X11ForwardState {
+    display_number: u32,
+    auth_protocol: String,
+    auth_cookie: String,
+    single_connection: bool,
 }
 
 /// State for remote forwarding listeners on the server side.
@@ -183,6 +204,8 @@ async fn handle_connection(
     let remote_forward_state = Arc::new(Mutex::new(RemoteForwardState::new()));
     // Channel router: shared between shell handler and remote forward connections
     let channel_router = ForwardedChannelRouter::new();
+    // X11 forwarding state: set when client sends X11Request
+    let x11_state: Arc<Mutex<Option<X11ForwardState>>> = Arc::new(Mutex::new(None));
 
     // Handle messages
     loop {
@@ -199,6 +222,7 @@ async fn handle_connection(
                 if let Err(e) = handle_client_message(
                     msg, &transport, &username, &connections,
                     &remote_forward_state, &channel_router,
+                    &x11_state,
                 ).await {
                     // Check if this is the special shell completion signal
                     if let QsshError::Protocol(ref msg) = e {
@@ -243,10 +267,11 @@ async fn handle_client_message(
     connections: &Arc<Mutex<HashMap<String, ClientConnection>>>,
     remote_forward_state: &Arc<Mutex<RemoteForwardState>>,
     channel_router: &ForwardedChannelRouter,
+    x11_state: &Arc<Mutex<Option<X11ForwardState>>>,
 ) -> Result<()> {
     match msg {
         Message::Channel(channel_msg) => {
-            handle_channel_message(channel_msg, transport, username, connections, channel_router).await?;
+            handle_channel_message(channel_msg, transport, username, connections, channel_router, x11_state).await?;
         }
         Message::GlobalRequest(req) => {
             handle_global_request(req, transport, username, remote_forward_state, channel_router).await?;
@@ -560,6 +585,7 @@ async fn handle_channel_message(
     username: &str,
     connections: &Arc<Mutex<HashMap<String, ClientConnection>>>,
     channel_router: &ForwardedChannelRouter,
+    x11_state: &Arc<Mutex<Option<X11ForwardState>>>,
 ) -> Result<()> {
     match msg {
         ChannelMessage::Open { channel_id, channel_type, window_size, max_packet_size } => {
@@ -650,6 +676,7 @@ async fn handle_channel_message(
                         _id: channel_id,
                         _channel_type: channel_type,
                         pty: None,
+                        x11_display: None,
                     });
                 }
                 return Ok(());
@@ -672,6 +699,7 @@ async fn handle_channel_message(
                     _id: channel_id,
                     _channel_type: channel_type,
                     pty: None,
+                    x11_display: None,
                 });
             }
         }
@@ -808,6 +836,91 @@ async fn handle_channel_message(
             // Handle subsystem request
             handle_subsystem_request(channel_id, subsystem, transport, username).await?;
         }
+        ChannelMessage::X11Request { channel_id, single_connection, auth_protocol, auth_cookie, screen_number } => {
+            log::info!("User {} requesting X11 forwarding on channel {} (screen {})",
+                username, channel_id, screen_number);
+
+            // Find an available display number (10..100)
+            let mut display_number = 10u32;
+            for dn in 10u32..100 {
+                let port = 6000 + dn as u16;
+                if TcpListener::bind(format!("127.0.0.1:{}", port)).await.is_ok() {
+                    display_number = dn;
+                    break;
+                }
+            }
+
+            // Store X11 state globally and on the channel
+            {
+                let mut state = x11_state.lock().await;
+                *state = Some(X11ForwardState {
+                    display_number,
+                    auth_protocol: auth_protocol.clone(),
+                    auth_cookie: auth_cookie.clone(),
+                    single_connection,
+                });
+            }
+            {
+                let mut conns = connections.lock().await;
+                if let Some(conn) = conns.get_mut(username) {
+                    if let Some(ch) = conn.channels.get_mut(&channel_id) {
+                        ch.x11_display = Some(X11Display {
+                            display: format!("localhost:{}.0", display_number),
+                        });
+                    }
+                }
+            }
+
+            // Start X11 listener on localhost:6000+display_number
+            let x11_port = 6000 + display_number as u16;
+            match TcpListener::bind(format!("127.0.0.1:{}", x11_port)).await {
+                Ok(listener) => {
+                    log::info!("X11 forwarding: listening on 127.0.0.1:{} (DISPLAY=:{}.{})",
+                        x11_port, display_number, screen_number);
+
+                    // Spawn X11 accept loop
+                    let transport_x11 = transport.clone();
+                    let single = single_connection;
+                    tokio::spawn(async move {
+                        loop {
+                            match listener.accept().await {
+                                Ok((stream, peer)) => {
+                                    log::debug!("X11 connection from {} on display :{}", peer, display_number);
+
+                                    let transport_conn = transport_x11.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = handle_x11_server_connection(
+                                            stream, transport_conn,
+                                        ).await {
+                                            log::debug!("X11 connection ended: {}", e);
+                                        }
+                                    });
+
+                                    if single {
+                                        log::info!("X11 single-connection mode — stopping listener");
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    log::error!("X11 accept error: {}", e);
+                                    break;
+                                }
+                            }
+                        }
+                    });
+
+                    // Acknowledge X11 request
+                    let ack = Message::Channel(ChannelMessage::Data {
+                        channel_id,
+                        data: vec![0], // success
+                    });
+                    transport.send_message(&ack).await?;
+                }
+                Err(e) => {
+                    log::error!("Failed to bind X11 listener on port {}: {}", x11_port, e);
+                }
+            }
+        }
         ChannelMessage::ForwardRequest { channel_id, remote_host, remote_port } => {
             // Handle ForwardRequest for DirectTcpIp channels (sent after Channel::Open with DirectTcpIp variant)
             let target_addr = format!("{}:{}", remote_host, remote_port);
@@ -876,6 +989,76 @@ async fn handle_channel_message(
             log::debug!("Unhandled channel message from {}", username);
         }
     }
+    Ok(())
+}
+
+/// Handle an X11 connection on the server side.
+/// Opens an X11 channel back to the client and bridges TCP <-> channel data.
+async fn handle_x11_server_connection(
+    stream: TcpStream,
+    transport: Transport,
+) -> Result<()> {
+    let channel_id = rand::random::<u32>() % 65536;
+
+    // Open X11 channel back to the client
+    let open_msg = Message::Channel(ChannelMessage::Open {
+        channel_id,
+        channel_type: ChannelType::X11,
+        window_size: 1024 * 1024,
+        max_packet_size: 32768,
+    });
+    transport.send_message(&open_msg).await?;
+
+    // Bridge TCP <-> channel
+    let (mut tcp_read, mut tcp_write) = stream.into_split();
+
+    let transport_send = transport.clone();
+    let tcp_to_channel = tokio::spawn(async move {
+        let mut buf = vec![0u8; 8192];
+        loop {
+            match tcp_read.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    let msg = Message::Channel(ChannelMessage::Data {
+                        channel_id,
+                        data: buf[..n].to_vec(),
+                    });
+                    if transport_send.send_message(&msg).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let channel_to_tcp = tokio::spawn(async move {
+        loop {
+            match transport.receive_message::<Message>().await {
+                Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data }))
+                    if ch_id == channel_id =>
+                {
+                    if tcp_write.write_all(&data).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id }))
+                | Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id }))
+                    if ch_id == channel_id =>
+                {
+                    break;
+                }
+                Ok(Message::Disconnect(_)) | Err(_) => break,
+                Ok(_) => continue,
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = tcp_to_channel => {}
+        _ = channel_to_tcp => {}
+    }
+
     Ok(())
 }
 

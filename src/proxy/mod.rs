@@ -78,7 +78,7 @@ impl ProxyConnection {
         }
     }
 
-    /// Connect through ProxyJump hosts
+    /// Connect through ProxyJump hosts (supports multi-hop chaining)
     async fn connect_jump(&self, final_host: &str, final_port: u16) -> Result<TcpStream> {
         let jump_hosts = Self::parse_jump_hosts(&self.config.target)?;
 
@@ -86,112 +86,61 @@ impl ProxyConnection {
             return Err(QsshError::Config("No jump hosts specified".into()));
         }
 
-        // For now, support single-hop jump (most common case).
-        // Multi-hop would chain: connect_jump to first host, then open DirectTcpip
-        // to second host, etc.
-        let first_host = &jump_hosts[0];
-        let jump_addr = format!("{}:{}", first_host.hostname, first_host.port);
+        log::info!("ProxyJump: {} hop(s) to reach {}:{}", jump_hosts.len(), final_host, final_port);
 
-        log::info!("ProxyJump: connecting to jump host {} as {}",
-            jump_addr, first_host.username);
+        // Keep all jump clients alive so their transports stay open
+        let mut keep_alive: Vec<QsshClient> = Vec::new();
+        let mut current_transport: Option<Transport> = None;
 
-        // Build config for jump host connection
-        let mut jump_config = self.jump_config.clone();
-        jump_config.server = jump_addr;
-        jump_config.username = first_host.username.clone();
+        // Chain through each jump host
+        for (i, hop) in jump_hosts.iter().enumerate() {
+            let hop_addr = format!("{}:{}", hop.hostname, hop.port);
+            log::info!("ProxyJump: hop {}/{} — connecting to {} as {}",
+                i + 1, jump_hosts.len(), hop_addr, hop.username);
 
-        // Connect to jump host (full PQ handshake)
-        let mut jump_client = QsshClient::new(jump_config);
-        jump_client.connect().await?;
+            let mut hop_config = self.jump_config.clone();
+            hop_config.server = hop_addr;
+            hop_config.username = hop.username.clone();
 
-        let transport = jump_client.transport()
-            .ok_or_else(|| QsshError::Protocol("Jump host transport not available".into()))?
-            .clone();
+            let mut hop_client = QsshClient::new(hop_config);
 
-        // Determine the target for the DirectTcpip channel.
-        // If multi-hop, chain through intermediate hosts first. For now, target the final host.
-        let target_host = if jump_hosts.len() > 1 {
-            // Multi-hop: for simplicity, we target the next jump host.
-            // Full multi-hop would recursively tunnel.
-            log::warn!("Multi-hop ProxyJump: only first hop fully supported. Targeting final host directly.");
-            final_host.to_string()
-        } else {
-            final_host.to_string()
-        };
-
-        log::info!("ProxyJump: opening DirectTcpip channel to {}:{}", target_host, final_port);
-
-        // Open DirectTcpip channel through the jump host
-        let channel_id = rand::random::<u32>() % 65536;
-
-        let open_msg = Message::Channel(ChannelMessage::Open {
-            channel_id,
-            channel_type: ChannelType::DirectTcpip {
-                host: target_host.clone(),
-                port: final_port,
-                originator_host: "127.0.0.1".to_string(),
-                originator_port: 0,
-            },
-            window_size: 1024 * 1024,
-            max_packet_size: 32768,
-        });
-
-        transport.send_message(&open_msg).await?;
-
-        // Wait for Accept from jump host
-        let accept_timeout = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            wait_for_channel_accept(&transport, channel_id),
-        ).await;
-
-        match accept_timeout {
-            Ok(Ok(())) => {
-                log::info!("ProxyJump: DirectTcpip channel {} accepted", channel_id);
+            if let Some(ref prev_transport) = current_transport {
+                // Intermediate hop: open DirectTcpip through previous hop, then PQ handshake
+                let bridge_stream = open_channel_bridge(
+                    prev_transport, &hop.hostname, hop.port,
+                ).await?;
+                hop_client.connect_via_stream(bridge_stream).await?;
+            } else {
+                // First hop: direct TCP connection + PQ handshake
+                hop_client.connect().await?;
             }
-            Ok(Err(e)) => {
-                return Err(e);
-            }
-            Err(_) => {
-                return Err(QsshError::Protocol(
-                    "ProxyJump: timeout waiting for DirectTcpip channel accept".into()
-                ));
-            }
+
+            current_transport = Some(
+                hop_client.transport()
+                    .ok_or_else(|| QsshError::Protocol("Jump host transport not available".into()))?
+                    .clone()
+            );
+            keep_alive.push(hop_client);
         }
 
-        // Create a local TCP socket pair for bridging
-        let bridge_listener = TcpListener::bind("127.0.0.1:0").await
-            .map_err(|e| QsshError::Connection(format!("Failed to bind bridge listener: {}", e)))?;
-        let bridge_addr = bridge_listener.local_addr()
-            .map_err(|e| QsshError::Connection(format!("Failed to get bridge address: {}", e)))?;
+        let transport = current_transport
+            .ok_or_else(|| QsshError::Protocol("No transport after jump chain".into()))?;
 
-        // Connect one end (this will be returned to the caller)
-        let client_stream_task = tokio::spawn(async move {
-            TcpStream::connect(bridge_addr).await
-        });
+        // Final leg: open DirectTcpip through the last hop to the actual target
+        log::info!("ProxyJump: opening DirectTcpip channel to final target {}:{}", final_host, final_port);
 
-        // Accept the other end (this will be bridged to the channel)
-        let (bridge_stream, _) = bridge_listener.accept().await
-            .map_err(|e| QsshError::Connection(format!("Failed to accept bridge connection: {}", e)))?;
+        let client_stream = open_channel_bridge(&transport, final_host, final_port).await?;
 
-        let client_stream = client_stream_task.await
-            .map_err(|e| QsshError::Connection(format!("Bridge connect task failed: {}", e)))?
-            .map_err(|e| QsshError::Connection(format!("Failed to connect to bridge: {}", e)))?;
-
-        // Spawn bridge task: channel data <-> bridge TCP stream
-        // This task lives for the duration of the connection.
-        // When the bridge TCP stream closes (final client disconnects), the task ends.
-        let transport_bridge = transport.clone();
+        // Spawn a task to keep all jump clients alive for the connection lifetime.
+        // When the returned stream is dropped, the bridge tasks will end naturally.
         tokio::spawn(async move {
-            if let Err(e) = run_channel_bridge(
-                bridge_stream, transport_bridge, channel_id,
-            ).await {
-                log::debug!("ProxyJump bridge ended: {}", e);
-            }
-            // Keep jump_client alive so its transport stays open
-            let _ = jump_client;
+            // Hold references to keep transports alive
+            let _keep = keep_alive;
+            // Wait indefinitely — cleaned up when parent task cancels
+            tokio::signal::ctrl_c().await.ok();
         });
 
-        log::info!("ProxyJump: bridge established, returning stream to {}:{}", target_host, final_port);
+        log::info!("ProxyJump: multi-hop bridge established to {}:{}", final_host, final_port);
 
         Ok(client_stream)
     }
@@ -271,6 +220,80 @@ impl ProxyConnection {
 
         Ok(client_stream)
     }
+}
+
+/// Open a DirectTcpip channel through a transport and return a bridged TcpStream.
+///
+/// 1. Sends ChannelOpen(DirectTcpip) targeting target_host:target_port
+/// 2. Waits for Accept
+/// 3. Creates a local TCP socket pair
+/// 4. Spawns a bridge task between the channel and one end of the pair
+/// 5. Returns the other end of the pair as a TcpStream
+async fn open_channel_bridge(
+    transport: &Transport,
+    target_host: &str,
+    target_port: u16,
+) -> Result<TcpStream> {
+    let channel_id = rand::random::<u32>() % 65536;
+
+    let open_msg = Message::Channel(ChannelMessage::Open {
+        channel_id,
+        channel_type: ChannelType::DirectTcpip {
+            host: target_host.to_string(),
+            port: target_port,
+            originator_host: "127.0.0.1".to_string(),
+            originator_port: 0,
+        },
+        window_size: 1024 * 1024,
+        max_packet_size: 32768,
+    });
+
+    transport.send_message(&open_msg).await?;
+
+    // Wait for Accept
+    let accept_timeout = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        wait_for_channel_accept(transport, channel_id),
+    ).await;
+
+    match accept_timeout {
+        Ok(Ok(())) => {
+            log::info!("ProxyJump: DirectTcpip channel {} accepted for {}:{}", channel_id, target_host, target_port);
+        }
+        Ok(Err(e)) => return Err(e),
+        Err(_) => {
+            return Err(QsshError::Protocol(
+                format!("ProxyJump: timeout waiting for channel accept to {}:{}", target_host, target_port)
+            ));
+        }
+    }
+
+    // Create local TCP socket pair
+    let bridge_listener = TcpListener::bind("127.0.0.1:0").await
+        .map_err(|e| QsshError::Connection(format!("Failed to bind bridge listener: {}", e)))?;
+    let bridge_addr = bridge_listener.local_addr()
+        .map_err(|e| QsshError::Connection(format!("Failed to get bridge address: {}", e)))?;
+
+    let client_stream_task = tokio::spawn(async move {
+        TcpStream::connect(bridge_addr).await
+    });
+
+    let (bridge_stream, _) = bridge_listener.accept().await
+        .map_err(|e| QsshError::Connection(format!("Failed to accept bridge connection: {}", e)))?;
+
+    let client_stream = client_stream_task.await
+        .map_err(|e| QsshError::Connection(format!("Bridge connect task failed: {}", e)))?
+        .map_err(|e| QsshError::Connection(format!("Failed to connect to bridge: {}", e)))?;
+
+    // Spawn bridge task: channel data <-> bridge TCP stream
+    let transport_bridge = transport.clone();
+    tokio::spawn(async move {
+        if let Err(e) = run_channel_bridge(bridge_stream, transport_bridge, channel_id).await {
+            log::debug!("ProxyJump bridge for channel {} ended: {}", channel_id, e);
+        }
+    });
+
+    Ok(client_stream)
 }
 
 /// Wait for a ChannelMessage::Accept for the given channel_id on the transport.

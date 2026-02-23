@@ -1,6 +1,7 @@
 //! Quantum-secure transport layer
 
 use crate::{QsshError, Result, crypto::SymmetricCrypto};
+use crate::compression::{CompressionAlgorithm, CompressionContext};
 use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -44,6 +45,10 @@ pub struct Transport {
     recv_sequence: Arc<Mutex<u64>>,
     /// Number of completed rekey operations
     rekey_count: Arc<std::sync::atomic::AtomicU32>,
+    /// Compression context for outgoing data
+    send_compression: Arc<Mutex<CompressionContext>>,
+    /// Compression context for incoming data
+    recv_compression: Arc<Mutex<CompressionContext>>,
 }
 
 impl Transport {
@@ -58,6 +63,8 @@ impl Transport {
             send_sequence: Arc::new(Mutex::new(0)),
             recv_sequence: Arc::new(Mutex::new(0)),
             rekey_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            send_compression: Arc::new(Mutex::new(CompressionContext::new(CompressionAlgorithm::None, 6))),
+            recv_compression: Arc::new(Mutex::new(CompressionContext::new(CompressionAlgorithm::None, 6))),
         }
     }
 
@@ -72,6 +79,8 @@ impl Transport {
             send_sequence: Arc::new(Mutex::new(0)),
             recv_sequence: Arc::new(Mutex::new(0)),
             rekey_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            send_compression: Arc::new(Mutex::new(CompressionContext::new(CompressionAlgorithm::None, 6))),
+            recv_compression: Arc::new(Mutex::new(CompressionContext::new(CompressionAlgorithm::None, 6))),
         }
     }
     
@@ -81,11 +90,17 @@ impl Transport {
         // Serialize message
         let plaintext = bincode::serialize(message)
             .map_err(|e| QsshError::Protocol(format!("Serialization failed: {}", e)))?;
-        
+
         if plaintext.len() > MAX_MESSAGE_SIZE {
             return Err(QsshError::Protocol("Message too large".into()));
         }
-        
+
+        // Compress serialized payload before encryption
+        let plaintext = {
+            let mut comp = self.send_compression.lock().await;
+            comp.compress(&plaintext)?
+        };
+
         // Get sequence number
         let seq = {
             let mut seq_lock = self.send_sequence.lock().await;
@@ -185,14 +200,38 @@ impl Transport {
         if received_seq != expected_seq {
             return Err(QsshError::Protocol(format!("Invalid sequence number: expected {}, got {}", expected_seq, received_seq)));
         }
-        
+
+        // Decompress before deserialization
+        let plaintext = {
+            let mut comp = self.recv_compression.lock().await;
+            comp.decompress(plaintext)?
+        };
+
         // Deserialize
-        let message = bincode::deserialize(plaintext)
+        let message = bincode::deserialize(&plaintext)
             .map_err(|e| QsshError::Protocol(format!("Deserialization failed: {}", e)))?;
         
         Ok(message)
     }
     
+    /// Enable compression on this transport (called after handshake negotiation)
+    pub async fn set_compression(&self, algorithm: CompressionAlgorithm, level: u32) {
+        let mut send = self.send_compression.lock().await;
+        *send = CompressionContext::new(algorithm, level);
+        let mut recv = self.recv_compression.lock().await;
+        *recv = CompressionContext::new(algorithm, level);
+        if algorithm.is_enabled() {
+            log::info!("Transport compression enabled: {:?} (level {})", algorithm, level);
+        }
+    }
+
+    /// Get compression statistics for sent data
+    pub async fn compression_stats(&self) -> (crate::compression::CompressionStats, crate::compression::CompressionStats) {
+        let send = self.send_compression.lock().await;
+        let recv = self.recv_compression.lock().await;
+        (send.stats().clone(), recv.stats().clone())
+    }
+
     /// Update encryption keys (rekey). Acquires write locks on both crypto instances
     /// and resets sequence numbers to prevent nonce reuse with new keys.
     pub async fn update_keys(&self, new_send: SymmetricCrypto, new_recv: SymmetricCrypto) -> Result<()> {
