@@ -47,6 +47,7 @@ pub struct ControlMaster {
 }
 
 /// Handle to an active session
+#[allow(dead_code)]
 struct SessionHandle {
     /// Local session identifier
     id: u32,
@@ -54,14 +55,13 @@ struct SessionHandle {
     channel_id: u32,
     /// Remote channel ID assigned by server
     remote_channel_id: u32,
-    /// Channel for sending control messages
-    tx: mpsc::Sender<ControlMessage>,
+    /// Channel for client→server data (read by forwarding task, sent to transport)
+    to_transport_tx: mpsc::Sender<Vec<u8>>,
+    /// Channel for server→client data (written by transport handler, read by client writer task)
+    to_client_tx: mpsc::Sender<Vec<u8>>,
     /// Current window size (flow control)
     window_size: Arc<AtomicU32>,
     /// Maximum packet size for this channel
-    /// Note: Stored for future flow control improvements but currently
-    /// passed directly to forwarding tasks during session creation
-    #[allow(dead_code)]
     max_packet_size: u32,
 }
 
@@ -319,14 +319,11 @@ async fn handle_transport_messages(
                         }
                     }
                     ChannelMessage::Data { channel_id, data } => {
-                        // Forward data to the appropriate session
+                        // Forward server data to the client via to_client_tx
                         let sessions_guard = sessions.read().await;
                         for handle in sessions_guard.values() {
                             if handle.remote_channel_id == channel_id {
-                                let _ = handle.tx.send(ControlMessage::Data {
-                                    session_id: handle.id,
-                                    data: data.clone(),
-                                }).await;
+                                let _ = handle.to_client_tx.send(data.clone()).await;
                                 break;
                             }
                         }
@@ -353,11 +350,8 @@ async fn handle_transport_messages(
                             .map(|(id, _)| *id);
 
                         if let Some(session_id) = session_id_to_remove {
-                            if let Some(handle) = sessions_guard.remove(&session_id) {
-                                let _ = handle.tx.send(ControlMessage::SessionClosed {
-                                    session_id,
-                                }).await;
-                            }
+                            // Remove session — dropping to_client_tx signals the client writer task
+                            sessions_guard.remove(&session_id);
                         }
                     }
                     _ => {
@@ -395,7 +389,7 @@ async fn handle_transport_messages(
 
 /// Handle control client connection
 async fn handle_control_client(
-    mut stream: UnixStream,
+    stream: UnixStream,
     sessions: Arc<RwLock<HashMap<u32, SessionHandle>>>,
     transport: Arc<Transport>,
     next_session_id: Arc<RwLock<u32>>,
@@ -403,6 +397,9 @@ async fn handle_control_client(
     pending_channels: Arc<RwLock<HashMap<u32, oneshot::Sender<Result<ChannelOpenResult>>>>>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
+    // Split stream so reader loop and server→client writer tasks can work concurrently
+    let (mut stream_reader, stream_writer) = stream.into_split();
+    let stream_writer = Arc::new(tokio::sync::Mutex::new(stream_writer));
     let mut buffer = vec![0u8; 65536];
 
     loop {
@@ -412,7 +409,7 @@ async fn handle_control_client(
         }
 
         // Read message length
-        let n = stream.read(&mut buffer[..4]).await?;
+        let n = stream_reader.read(&mut buffer[..4]).await?;
         if n == 0 {
             break; // Connection closed
         }
@@ -420,7 +417,7 @@ async fn handle_control_client(
         let msg_len = u32::from_be_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) as usize;
 
         // Read message
-        let n = stream.read(&mut buffer[..msg_len]).await?;
+        let n = stream_reader.read(&mut buffer[..msg_len]).await?;
         if n != msg_len {
             return Err(QsshError::Protocol("Incomplete control message".into()));
         }
@@ -447,14 +444,18 @@ async fn handle_control_client(
                     env,
                 ).await {
                     Ok(result) => {
-                        // Create session handle
-                        let (tx, mut rx) = mpsc::channel(256);
+                        // Create two channels:
+                        // to_transport: client→server (control client sends, forwarding task reads)
+                        // to_client: server→client (transport handler sends, client writer reads)
+                        let (to_transport_tx, mut to_transport_rx) = mpsc::channel::<Vec<u8>>(256);
+                        let (to_client_tx, mut to_client_rx) = mpsc::channel::<Vec<u8>>(256);
                         let window_size = Arc::new(AtomicU32::new(result.window_size));
                         let handle = SessionHandle {
                             id: session_id,
                             channel_id: result.local_channel_id,
                             remote_channel_id: result.remote_channel_id,
-                            tx,
+                            to_transport_tx,
+                            to_client_tx,
                             window_size: window_size.clone(),
                             max_packet_size: result.max_packet_size,
                         };
@@ -466,21 +467,45 @@ async fn handle_control_client(
                         // Store session
                         sessions.write().await.insert(session_id, handle);
 
-                        // Start forwarding task
+                        // Task 1: Forward client→server data to transport
                         let transport_clone = transport.clone();
                         tokio::spawn(async move {
-                            while let Some(msg) = rx.recv().await {
-                                if let ControlMessage::Data { data, .. } = msg {
-                                    // Forward data to transport channel with flow control
-                                    if let Err(e) = forward_to_channel(
-                                        &transport_clone,
-                                        remote_channel_id,
-                                        data,
-                                        max_packet_size,
-                                    ).await {
-                                        log::error!("Failed to forward data to channel {}: {}", channel_id, e);
+                            while let Some(data) = to_transport_rx.recv().await {
+                                if let Err(e) = forward_to_channel(
+                                    &transport_clone,
+                                    remote_channel_id,
+                                    data,
+                                    max_packet_size,
+                                ).await {
+                                    log::error!("Failed to forward data to channel {}: {}", channel_id, e);
+                                    break;
+                                }
+                            }
+                        });
+
+                        // Task 2: Forward server→client data back to control client
+                        let client_writer = stream_writer.clone();
+                        let sid = session_id;
+                        tokio::spawn(async move {
+                            while let Some(data) = to_client_rx.recv().await {
+                                let msg = ControlMessage::Data {
+                                    session_id: sid,
+                                    data,
+                                };
+                                let msg_bytes = match bincode::serialize(&msg) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        log::error!("Failed to serialize server data: {}", e);
                                         break;
                                     }
+                                };
+                                let len_bytes = (msg_bytes.len() as u32).to_be_bytes();
+                                let mut writer = client_writer.lock().await;
+                                if writer.write_all(&len_bytes).await.is_err() {
+                                    break;
+                                }
+                                if writer.write_all(&msg_bytes).await.is_err() {
+                                    break;
                                 }
                             }
                         });
@@ -495,16 +520,17 @@ async fn handle_control_client(
                         }).map_err(|e| QsshError::Protocol(format!("Serialization error: {}", e)))?;
 
                         let len_bytes = (response_bytes.len() as u32).to_be_bytes();
-                        stream.write_all(&len_bytes).await?;
-                        stream.write_all(&response_bytes).await?;
+                        let mut writer = stream_writer.lock().await;
+                        writer.write_all(&len_bytes).await?;
+                        writer.write_all(&response_bytes).await?;
                         continue;
                     }
                 }
             }
             ControlMessage::Data { session_id, data } => {
-                // Forward data to session
+                // Forward client data to transport (client→server)
                 if let Some(handle) = sessions.read().await.get(&session_id) {
-                    let _ = handle.tx.send(ControlMessage::Data { session_id, data }).await;
+                    let _ = handle.to_transport_tx.send(data).await;
                 }
                 continue; // No response needed
             }
@@ -532,8 +558,9 @@ async fn handle_control_client(
             .map_err(|e| QsshError::Protocol(format!("Failed to serialize response: {}", e)))?;
 
         let len_bytes = (response_bytes.len() as u32).to_be_bytes();
-        stream.write_all(&len_bytes).await?;
-        stream.write_all(&response_bytes).await?;
+        let mut writer = stream_writer.lock().await;
+        writer.write_all(&len_bytes).await?;
+        writer.write_all(&response_bytes).await?;
     }
 
     Ok(())
@@ -852,14 +879,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_handle_window_size() {
-        let (tx, _rx) = mpsc::channel(256);
+        let (to_transport_tx, _rx1) = mpsc::channel(256);
+        let (to_client_tx, _rx2) = mpsc::channel(256);
         let window_size = Arc::new(AtomicU32::new(DEFAULT_WINDOW_SIZE));
 
         let handle = SessionHandle {
             id: 1,
             channel_id: 0,
             remote_channel_id: 100,
-            tx,
+            to_transport_tx,
+            to_client_tx,
             window_size: window_size.clone(),
             max_packet_size: DEFAULT_MAX_PACKET_SIZE,
         };

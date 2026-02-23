@@ -1,10 +1,11 @@
 # QSSH Milestones & Roadmap
 
-**Last updated**: 2026-02-22 (commit `9a83260`)
+**Last updated**: 2026-02-23 (commit `6854fe2`)
 **Current version**: 0.3.1 (published on crates.io)
-**Tests**: 144 passing, 44 ignored (macOS pqcrypto segfault), 188 total
+**Tests**: 128 unit passing + integration tests, 0 ignored, 0 failed
 **Warnings**: 0 (enforced in CI)
 **Deployed**: Alice (51.79.26.123), Docker container `qsshd-server` on port 22222
+**Crypto backend**: Pure Rust (fn-dsa 0.3 + slh-dsa 0.0.3) — zero C FFI
 
 ---
 
@@ -110,21 +111,33 @@ SSH jump host / proxy support.
 
 ---
 
-## M1 — Production Cleanup (NEXT)
+## M0.8 — Pure-Rust Crypto Migration (COMPLETE)
+
+Replaced all C-FFI pqcrypto dependencies with pure-Rust implementations.
+
+| Feature | Status | Commit/Notes |
+|---------|--------|--------------|
+| Replace pqcrypto-falcon with fn-dsa 0.3 | DONE | `6854fe2` — Thomas Pornin's pure Rust impl |
+| Replace pqcrypto-sphincsplus with slh-dsa 0.0.3 | DONE | `6854fe2` — RustCrypto |
+| Remove pqcrypto, pqcrypto-traits, pqcrypto-dilithium | DONE | `6854fe2` — dead deps |
+| Un-ignore all 44 macOS segfault tests | DONE | `6854fe2` — all now pass |
+| Zero C-FFI crypto dependencies | DONE | fn-dsa + slh-dsa + ml-kem all pure Rust |
+
+## M1 — Production Cleanup (IN PROGRESS)
 
 Fix issues from `PRODUCTION_ISSUES.md` before wider release.
 
 | Feature | Status | Priority |
 |---------|--------|----------|
-| Replace `println!` with `log::debug!` in SFTP subsystem | TODO | Critical |
-| Replace `println!` in `crypto/quantum_kem.rs` | TODO | Critical |
-| Replace `println!` in `transport/quantum_resistant.rs` | TODO | Critical |
-| Remove GSSAPI module or make it return clear errors | TODO | Critical |
-| Fix multiplex channel creation (returns dummy ID) | TODO | High |
-| Fix multiplex data forwarding (not implemented) | TODO | High |
-| Remove hardcoded "secret123" from agent tests | TODO | Medium |
-| Replace `eprintln!` with structured logging | TODO | Medium |
-| Remove `src/qkd.disabled/` or document as experimental | TODO | Medium |
+| Replace `println!` with `log::debug!` in SFTP subsystem | DONE (already clean) | Critical |
+| Replace `println!` in `crypto/quantum_kem.rs` | DONE (already clean) | Critical |
+| Replace `println!` in `transport/quantum_resistant.rs` | DONE (test-only) | Critical |
+| Remove GSSAPI module or make it return clear errors | DONE (already returns errors) | Critical |
+| Fix multiplex channel creation (returns dummy ID) | DONE (IDs were correct, clarified naming) | High |
+| Fix multiplex data forwarding (not implemented) | DONE (split into bidirectional channels) | High |
+| Remove hardcoded "secret123" from agent tests | DONE (was `test_passphrase_only_for_unit_tests`) | Medium |
+| Replace `eprintln!` with structured logging | DONE (only in CLI bins, appropriate) | Medium |
+| Remove `src/qkd.disabled/` or document as experimental | DONE (dir doesn't exist) | Medium |
 | Update `PRODUCTION_ISSUES.md` (stale entries) | TODO | Low |
 
 ## M2 — Incomplete Features
@@ -133,7 +146,7 @@ Finish partially implemented features.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Connection multiplexing (full) | PARTIAL | Socket layer done, channel mux returns dummy ID |
+| Connection multiplexing (full) | PARTIAL | Bidirectional data forwarding fixed; needs end-to-end integration test |
 | X11 forwarding | PARTIAL | Listener works, server-side channel not wired |
 | Multi-hop ProxyJump | PARTIAL | First hop only |
 | Session resumption (ticket encryption) | PARTIAL | Encryption key may be placeholder |
@@ -212,7 +225,7 @@ src/
 
 1. **Not wire-compatible with OpenSSH** — custom binary protocol over TCP
 2. **PQ-only auth** — no RSA/ECDSA acceptance (by design)
-3. **macOS pqcrypto segfault** — Falcon tests `#[ignore]`d, full test suite needs Linux
+3. ~~**macOS pqcrypto segfault**~~ — RESOLVED in M0.8 (pure Rust, zero C FFI)
 4. **Default port 22222** — avoids conflict with system sshd
 
 ## Commit History Summary (77 commits)
