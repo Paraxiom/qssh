@@ -1,7 +1,7 @@
 # QSSH Milestones & Roadmap
 
 **Last updated**: 2026-02-23
-**Current version**: 0.3.1 (published on crates.io)
+**Current version**: 0.4.0 (published on crates.io)
 **Tests**: 154 unit passing (+ 18 QKD feature tests), 0 ignored, 0 failed
 **Warnings**: 0 (enforced in CI)
 **Deployed**: Alice (51.79.26.123), Docker container `qsshd-server` on port 22222
