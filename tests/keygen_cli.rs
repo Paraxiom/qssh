@@ -128,6 +128,6 @@ fn test_private_key_format() {
 
     let contents = std::fs::read_to_string(&key_path).unwrap();
     assert!(contents.starts_with("-----BEGIN QSSH PRIVATE KEY-----"));
-    assert!(contents.contains("Algorithm: Falcon512"));
+    assert!(contents.contains("Algorithm: Falcon-512"));
     assert!(contents.trim_end().ends_with("-----END QSSH PRIVATE KEY-----"));
 }
