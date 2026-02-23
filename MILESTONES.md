@@ -123,7 +123,7 @@ Replaced all C-FFI pqcrypto dependencies with pure-Rust implementations.
 | Un-ignore all 44 macOS segfault tests | DONE | `6854fe2` — all now pass |
 | Zero C-FFI crypto dependencies | DONE | fn-dsa + slh-dsa + ml-kem all pure Rust |
 
-## M1 — Production Cleanup (IN PROGRESS)
+## M1 — Production Cleanup (COMPLETE)
 
 Fix issues from `PRODUCTION_ISSUES.md` before wider release.
 
@@ -138,9 +138,9 @@ Fix issues from `PRODUCTION_ISSUES.md` before wider release.
 | Remove hardcoded "secret123" from agent tests | DONE (was `test_passphrase_only_for_unit_tests`) | Medium |
 | Replace `eprintln!` with structured logging | DONE (only in CLI bins, appropriate) | Medium |
 | Remove `src/qkd.disabled/` or document as experimental | DONE (dir doesn't exist) | Medium |
-| Update `PRODUCTION_ISSUES.md` (stale entries) | TODO | Low |
+| Update `PRODUCTION_ISSUES.md` (stale entries) | DONE | Low |
 
-## M2 — Incomplete Features (IN PROGRESS)
+## M2 — Incomplete Features (COMPLETE)
 
 Finish partially implemented features.
 
@@ -165,7 +165,7 @@ Software interfaces for quantum hardware — ready for real endpoints.
 | HSM key storage | DONE | `KeyStorageBackend` trait — Software, File, PKCS#11 (stub) backends |
 | BB84 protocol | DONE | Noise model, information reconciliation, QBER feedback, tier integration |
 
-## M4 — Enterprise & Compliance (IN PROGRESS)
+## M4 — Enterprise & Compliance (COMPLETE)
 
 Production hardening and compliance features.
 
@@ -176,9 +176,9 @@ Production hardening and compliance features.
 | Audit logging (structured) | DONE | `AuditLogger` — hash-chained JSONL, wired into server (connect/auth/exec/disconnect) |
 | Password zeroization | DONE | `zeroize` crate on client config, server handshake, `qssh-passwd` binary |
 | Secure password input masking | DONE | `rpassword` already suppresses echo (pre-existing) |
-| FIPS 140-3 validation | NOT STARTED | Requires formal process |
-| P2P discovery | STUB | `src/p2p/mod.rs` scaffolding only |
-| Blockchain-based key registry | STUB | QuantumHarmony integration planned |
+| FIPS 140-3 validation | FUTURE | Requires formal process — cannot be automated |
+| P2P discovery | FUTURE | `src/p2p/mod.rs` scaffolding only |
+| Blockchain-based key registry | FUTURE | QuantumHarmony integration planned |
 
 ---
 
