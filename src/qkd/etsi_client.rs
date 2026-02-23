@@ -150,7 +150,8 @@ impl EtsiQkdClient {
 
         // Decode the base64 key
         if let Some(key_b64) = key_response.key {
-            let key_bytes = base64::decode(&key_b64)
+            use base64::Engine;
+            let key_bytes = base64::engine::general_purpose::STANDARD.decode(&key_b64)
                 .map_err(|e| QsshError::Qkd(format!("Failed to decode key: {}", e)))?;
             
             log::info!("Successfully retrieved key: {} (QBER: {})", 
@@ -215,8 +216,6 @@ pub fn create_etsi_client(config: &super::QkdConfig) -> Result<EtsiQkdClient> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_qkd_config() {
         let config = super::super::QkdConfig {

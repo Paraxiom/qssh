@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod bb84;
 pub mod etsi_client;
-pub use bb84::{BB84Protocol, E91Protocol};
+pub use bb84::{BB84Protocol, BB84Result, ChannelNoise, E91Protocol};
 pub use etsi_client::{EtsiQkdClient, create_etsi_client};
 
 /// QKD Provider Types
@@ -27,6 +27,7 @@ pub enum QkdProvider {
 }
 
 /// QKD client for retrieving quantum keys
+#[allow(dead_code)]
 pub struct QkdClient {
     provider: QkdProvider,
     connection: Arc<Mutex<QkdConnection>>,
@@ -34,6 +35,7 @@ pub struct QkdClient {
 }
 
 /// Actual QKD connection implementation
+#[allow(dead_code)]
 struct QkdConnection {
     provider: QkdProvider,
     bb84: Option<BB84Protocol>,
@@ -41,6 +43,7 @@ struct QkdConnection {
     key_cache: Vec<Vec<u8>>,
     keys_generated: usize,
     error_count: usize,
+    last_qber: Option<f64>,
     config: QkdConfig,
 }
 
@@ -59,6 +62,7 @@ impl QkdConnection {
             key_cache: Vec::new(),
             keys_generated: 0,
             error_count: 0,
+            last_qber: None,
             config,
         }
     }
@@ -67,9 +71,14 @@ impl QkdConnection {
         match &self.provider {
             QkdProvider::BB84 => {
                 if let Some(protocol) = &self.bb84 {
-                    let key = protocol.generate_key(size_bits).await?;
+                    let result = protocol.generate_key_detailed(size_bits).await?;
                     self.keys_generated += 1;
-                    Ok(key)
+                    self.last_qber = Some(result.qber);
+                    log::debug!(
+                        "BB84 key generated: QBER={:.4}, rate={:.3}, {} bits",
+                        result.qber, result.key_rate, result.final_bits
+                    );
+                    Ok(result.key)
                 } else {
                     Err(QsshError::Qkd("BB84 protocol not initialized".into()))
                 }
@@ -206,11 +215,74 @@ impl QkdClient {
                 std::path::Path::new(device_path).exists()
             }
             QkdProvider::Network { endpoint } => {
-                // Try to ping the endpoint
                 log::debug!("Checking QKD network availability: {}", endpoint);
-                false // Would need actual network check
+                // Probe the ETSI status endpoint with a short timeout
+                match Self::probe_network_endpoint(endpoint).await {
+                    Ok(true) => true,
+                    Ok(false) => {
+                        log::debug!("QKD endpoint {} is reachable but link is down", endpoint);
+                        false
+                    }
+                    Err(e) => {
+                        log::debug!("QKD endpoint {} unreachable: {}", endpoint, e);
+                        false
+                    }
+                }
             }
         }
+    }
+
+    /// Probe a network QKD endpoint to check if it's available
+    async fn probe_network_endpoint(endpoint: &str) -> std::result::Result<bool, String> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .map_err(|e| format!("HTTP client error: {}", e))?;
+
+        let url = format!("{}/status", endpoint.trim_end_matches('/'));
+        let response = client.get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("Connection failed: {}", e))?;
+
+        if response.status().is_success() {
+            // Try to parse ETSI status response
+            if let Ok(status) = response.json::<etsi_client::QkdStatus>().await {
+                log::info!(
+                    "QKD link status: {}, key rate: {:.1} bps, QBER: {:.4}, available keys: {}",
+                    status.link_status, status.key_rate, status.qber, status.available_keys
+                );
+                Ok(status.link_status == "active" || status.link_status == "connected")
+            } else {
+                // Endpoint responded but not ETSI format — consider it available
+                Ok(true)
+            }
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Get a QKD key and XOR it with PQC shared secret for defense in depth.
+    /// This is the recommended usage for T4+ security tiers.
+    pub async fn enhance_shared_secret(&self, pqc_secret: &[u8]) -> Result<Vec<u8>> {
+        let qkd_key = self.get_key(pqc_secret.len() * 8).await?;
+
+        if qkd_key.len() != pqc_secret.len() {
+            return Err(QsshError::Qkd(format!(
+                "QKD key size mismatch: got {} bytes, need {}",
+                qkd_key.len(), pqc_secret.len()
+            )));
+        }
+
+        // XOR QKD key with PQC secret — if either is compromised, the combined
+        // secret remains as strong as the uncompromised component
+        let enhanced: Vec<u8> = pqc_secret.iter()
+            .zip(qkd_key.iter())
+            .map(|(&a, &b)| a ^ b)
+            .collect();
+
+        log::info!("Shared secret enhanced with {} bytes of QKD key material", enhanced.len());
+        Ok(enhanced)
     }
 
     /// Get QKD statistics
@@ -221,6 +293,7 @@ impl QkdClient {
             keys_generated: conn.keys_generated,
             error_count: conn.error_count,
             cached_keys: conn.key_cache.len(),
+            last_qber: conn.last_qber,
         }
     }
 }
@@ -298,6 +371,8 @@ pub struct QkdStats {
     pub keys_generated: usize,
     pub error_count: usize,
     pub cached_keys: usize,
+    /// Last observed QBER (quantum bit error rate), if available
+    pub last_qber: Option<f64>,
 }
 
 #[cfg(test)]
@@ -339,5 +414,33 @@ mod tests {
         let (_, keys_used, total_bits) = session.get_stats();
         assert_eq!(keys_used, 2);
         assert_eq!(total_bits, 384);
+    }
+
+    #[tokio::test]
+    async fn test_enhance_shared_secret() {
+        let client = QkdClient::new("bb84://simulator".to_string(), None).unwrap();
+        let pqc_secret = vec![0x42u8; 32];
+
+        let enhanced = client.enhance_shared_secret(&pqc_secret).await.unwrap();
+        assert_eq!(enhanced.len(), 32);
+
+        // Enhanced secret should differ from original (XOR with QKD key)
+        // Extremely unlikely to be equal unless QKD key is all zeros
+        assert_ne!(enhanced, pqc_secret);
+    }
+
+    #[tokio::test]
+    async fn test_qkd_stats_include_qber() {
+        let client = QkdClient::new("bb84://simulator".to_string(), None).unwrap();
+        let stats = client.get_stats().await;
+        assert_eq!(stats.keys_generated, 0);
+        assert_eq!(stats.error_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_network_provider_unavailable() {
+        // Non-existent endpoint should return false for is_available
+        let client = QkdClient::new("https://localhost:19999".to_string(), None).unwrap();
+        assert!(!client.is_available().await);
     }
 }

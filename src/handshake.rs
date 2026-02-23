@@ -45,9 +45,14 @@ impl<'a> ClientHandshake<'a> {
                 min_entropy: 0.9,
             };
             
-            let endpoint = config.qkd_endpoint.clone()
-                .ok_or_else(|| QsshError::Qkd("QKD endpoint not configured".into()))?;
-            
+            let endpoint = match config.qkd_endpoint.clone() {
+                Some(ep) => ep,
+                None => {
+                    log::warn!("QKD enabled but no endpoint configured");
+                    String::new()
+                }
+            };
+
             match QkdClient::new(endpoint, Some(qkd_config)) {
                 Ok(client) => {
                     log::info!("QKD client initialized successfully");

@@ -20,10 +20,12 @@ use zeroize::Zeroize;
 pub mod ratchet;
 pub mod lamport;
 pub mod signing_service;
+pub mod hsm;
 
 pub use ratchet::DoubleRatchet;
 pub use lamport::{LamportKeypair, LamportSignature};
 pub use signing_service::{SigningService, SigningClient, SignRequest, SignResponse, KeyInfo};
+pub use hsm::{KeyStorageBackend, KeyMetadata, SoftwareBackend, FileBackend, Pkcs11Backend};
 
 /// Quantum Vault for secure key management
 pub struct QuantumVault {
