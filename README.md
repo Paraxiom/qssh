@@ -300,8 +300,8 @@ cd lean && lake build  # 0 errors, 0 sorries
 ## Documentation
 
 - [API Documentation](https://docs.rs/qssh)
-- [Quantum-Native Paradigm](QUANTUM_NATIVE_PARADIGM.md)
 - [Production Readiness](PRODUCTION_READINESS.md)
+- [Milestones & Roadmap](MILESTONES.md)
 - [Changelog](CHANGELOG.md)
 
 ## License

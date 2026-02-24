@@ -2,6 +2,35 @@
 
 All notable changes to QSSH are documented in this file.
 
+## [0.4.0] - 2026-02-23
+
+### Changed (BREAKING)
+
+- **Pure-Rust crypto backend**: Replaced all C-FFI pqcrypto dependencies with pure-Rust implementations. Zero C code, zero `unsafe` in crypto paths.
+  - Falcon-512: `pqcrypto-falcon` → `fn-dsa 0.3` (Thomas Pornin, Falcon co-designer)
+  - SPHINCS+: `pqcrypto-sphincsplus` → `slh-dsa 0.0.3` (RustCrypto)
+  - Removed: `pqcrypto`, `pqcrypto-traits`, `pqcrypto-dilithium` (dead deps)
+- FN-DSA signature encoding differs from original Falcon (666 vs ~690 bytes) — wire-incompatible with v0.3.x
+
+### Added
+
+- **SSH agent forwarding** (`-A`): Client bridges to `QSSH_AUTH_SOCK`, server creates per-session socket
+- **Certificate-based authentication**: `AuthMethod::Certificate`, client loads `~/.qssh/id_qssh-cert`
+- **Compression wired to transport**: `CompressionContext` in send/receive path (zlib, zstd, lz4)
+- **Session resumption**: Server master secret + HMAC-SHA256 integrity + constant-time verification
+- **X11 forwarding**: Server-side handler — listener, X11 channel bridging, DISPLAY state
+- **Multi-hop ProxyJump**: Iterative hop chaining via `open_channel_bridge()` + `connect_via_stream()`
+- **Audit logging**: Hash-chained JSONL (`AuditLogger`), wired into server (connect/auth/exec/disconnect)
+- **Argon2id password hashing**: PHC string format, random salt, auto-upgrade from SHA3-256
+- **Exit status propagation**: `ExitStatus` variant in protocol, client `exec_with_status()`
+- **Password zeroization**: `zeroize` crate on client config, server handshake, `qssh-passwd` binary
+- **Quantum hardware interfaces**: QKD (ETSI API), QRNG entropy (multi-source), HSM key storage, BB84 protocol
+
+### Fixed
+
+- All 44 previously-ignored macOS tests now pass (pure Rust eliminates C FFI segfaults)
+- 229 tests passing (154 unit + 75 integration), 0 ignored, 0 warnings
+
 ## [0.3.1] - 2026-02-22
 
 ### Added
@@ -64,7 +93,7 @@ All notable changes to QSSH are documented in this file.
 - Added replay attack protection with sequence numbers
 - Fixed frame sizes (768 bytes) for traffic analysis resistance
 
-### Known Issues
+### Known Issues (resolved in v0.4.0)
 
-- Falcon algorithm segfaults on macOS (pqcrypto library issue)
-- ProxyJump/ProxyCommand incomplete
+- ~~Falcon algorithm segfaults on macOS~~ — resolved (pure Rust crypto backend)
+- ~~ProxyJump/ProxyCommand incomplete~~ — resolved (multi-hop chaining)

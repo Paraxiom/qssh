@@ -6,8 +6,10 @@ QSSH (Quantum-Secure Shell) is a post-quantum cryptographic replacement for SSH,
 
 ## Current Status: Beta
 
-**Version**: 0.3.1
+**Version**: 0.4.0
 **Last Updated**: February 2026
+**Crypto Backend**: Pure Rust (fn-dsa 0.3 + slh-dsa 0.0.3) — zero C FFI
+**Tests**: 229 passing (154 unit + 75 integration), 0 ignored, 0 warnings
 
 ### Production-Ready Features
 
@@ -32,12 +34,11 @@ QSSH (Quantum-Secure Shell) is a post-quantum cryptographic replacement for SSH,
 
 ### Known Limitations
 
-| Feature | Status | Workaround |
-|---------|--------|------------|
-| Falcon on macOS | ⚠️ Segfault | Use SPHINCS+ or run on Linux |
-| ProxyJump | 🚧 Partial | Use direct connections |
-| X11 Forwarding | 🚧 Partial | Use X11 over port forward |
+| Feature | Status | Notes |
+|---------|--------|-------|
 | GSSAPI/Kerberos | ❌ Stub (feature-gated) | Use password/key auth |
+| FIPS 140-3 | ❌ Not validated | Requires formal process |
+| OpenSSH wire compat | ❌ By design | Custom PQ binary protocol |
 
 ## Security Architecture
 
@@ -93,8 +94,8 @@ All frames are exactly 768 bytes, making traffic analysis infeasible.
 
 ### System Requirements
 
-- **OS**: Linux (recommended), macOS (limited Falcon support)
-- **Rust**: 1.70+ for building
+- **OS**: Linux or macOS (both fully supported — pure Rust crypto)
+- **Rust**: 1.85+ for building
 - **Memory**: 64MB minimum
 - **Network**: TCP port 22222 (default)
 
@@ -203,18 +204,11 @@ cargo test
 ### Test Results (February 2026)
 
 ```
-Total:  160+ tests passing, ~40 ignored (macOS pqcrypto-falcon segfault)
+Total:  229 tests passing (154 unit + 75 integration), 0 ignored, 0 warnings
 Formal: 30 Kani harnesses, 20 Verus proofs, 67 Lean 4 theorems
 ```
 
-Ignored tests are due to pqcrypto-falcon segfaults on macOS. These tests pass on Linux.
-
-### Run on Linux (Full Coverage)
-
-```bash
-# Using Docker
-docker run -v $(pwd):/app -w /app rust:latest cargo test
-```
+All tests pass on both Linux and macOS (pure Rust crypto backend, no C FFI).
 
 ## Performance
 
@@ -256,21 +250,6 @@ RUST_LOG=info qssh user@host 2>> /var/log/qssh.log
 ```
 
 ## Troubleshooting
-
-### Falcon Segfault on macOS
-
-**Symptom**: Crash during key generation or handshake on macOS.
-
-**Cause**: pqcrypto-falcon library has memory issues on macOS.
-
-**Solution**:
-```bash
-# Use SPHINCS+ instead
-qssh --pq-algo sphincs user@host
-
-# Or set in config
-echo "PqAlgorithm sphincs" >> ~/.qssh/config
-```
 
 ### Connection Timeout
 
