@@ -97,10 +97,10 @@ impl CertificateAuthority {
     /// Load CA from files
     pub fn load(private_key_path: &str, public_key_path: &str) -> Result<Self> {
         let private_key = std::fs::read(private_key_path)
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
 
         let public_key_data = std::fs::read(public_key_path)
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
 
         // Detect algorithm from key size
         let algorithm = detect_algorithm(&public_key_data)?;
@@ -254,6 +254,12 @@ pub struct CertificateValidator {
     allow_expired: bool,
 }
 
+impl Default for CertificateValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CertificateValidator {
     /// Create new validator
     pub fn new() -> Self {
@@ -362,6 +368,12 @@ pub struct CertificateStore {
     host_certs: HashMap<String, SshCertificate>,
     /// CA certificates
     ca_certs: Vec<PublicKey>,
+}
+
+impl Default for CertificateStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CertificateStore {

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// Represents a Quantum Harmony validator node
+#[allow(dead_code)]
 struct QuantumHarmonyValidator {
     /// Node identifier
     node_id: String,
@@ -25,6 +26,7 @@ struct QuantumHarmonyValidator {
 }
 
 /// A peer validator connected via QSSH
+#[allow(dead_code)]
 struct ValidatorPeer {
     node_id: String,
     qssh_client: QsshClient,

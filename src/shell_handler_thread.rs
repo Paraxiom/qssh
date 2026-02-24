@@ -150,7 +150,7 @@ impl ShellSessionThread {
         // NOW spawn the shell process - after PTY threads are ready
         log::debug!("Spawning shell process");
         let mut process = self.process.spawn()
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
         
         // Close the original slave FD since we duplicated it for the shell process
         unsafe { libc::close(original_slave_fd); }

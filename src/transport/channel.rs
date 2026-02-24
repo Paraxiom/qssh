@@ -13,6 +13,12 @@ pub struct ChannelManager {
     data_handlers: Arc<Mutex<HashMap<u32, mpsc::Sender<Vec<u8>>>>>,
 }
 
+impl Default for ChannelManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChannelManager {
     pub fn new() -> Self {
         Self {
@@ -155,13 +161,13 @@ impl PortForward {
         use tokio::net::TcpListener;
         
         let listener = TcpListener::bind(format!("127.0.0.1:{}", self.local_port)).await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
         
         log::info!("Port forward listening on 127.0.0.1:{}", self.local_port);
         
         loop {
             let (socket, addr) = listener.accept().await
-                .map_err(|e| QsshError::Io(e))?;
+                .map_err(QsshError::Io)?;
             
             log::debug!("New connection from {}", addr);
             

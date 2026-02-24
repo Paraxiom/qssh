@@ -26,6 +26,9 @@ const DEFAULT_WINDOW_SIZE: u32 = 1024 * 1024;
 /// Default maximum packet size for channels (32 KB)
 const DEFAULT_MAX_PACKET_SIZE: u32 = 32768;
 
+/// Type alias for the pending channel confirmation map.
+type PendingChannelMap = HashMap<u32, oneshot::Sender<Result<ChannelOpenResult>>>;
+
 /// Control socket for multiplexed connections
 pub struct ControlMaster {
     /// Path to the control socket
@@ -43,7 +46,7 @@ pub struct ControlMaster {
     /// Shutdown notification
     shutdown_notify: Arc<Notify>,
     /// Pending channel open requests awaiting server response
-    pending_channels: Arc<RwLock<HashMap<u32, oneshot::Sender<Result<ChannelOpenResult>>>>>,
+    pending_channels: Arc<RwLock<PendingChannelMap>>,
 }
 
 /// Handle to an active session
@@ -279,7 +282,7 @@ impl ControlMaster {
 async fn handle_transport_messages(
     transport: Arc<Transport>,
     sessions: Arc<RwLock<HashMap<u32, SessionHandle>>>,
-    pending_channels: Arc<RwLock<HashMap<u32, oneshot::Sender<Result<ChannelOpenResult>>>>>,
+    pending_channels: Arc<RwLock<PendingChannelMap>>,
     shutdown: Arc<AtomicBool>,
 ) {
     loop {
@@ -394,7 +397,7 @@ async fn handle_control_client(
     transport: Arc<Transport>,
     next_session_id: Arc<RwLock<u32>>,
     next_channel_id: Arc<AtomicU32>,
-    pending_channels: Arc<RwLock<HashMap<u32, oneshot::Sender<Result<ChannelOpenResult>>>>>,
+    pending_channels: Arc<RwLock<PendingChannelMap>>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
     // Split stream so reader loop and server→client writer tasks can work concurrently
@@ -573,7 +576,7 @@ async fn handle_control_client(
 async fn create_channel(
     transport: &Arc<Transport>,
     next_channel_id: &Arc<AtomicU32>,
-    pending_channels: &Arc<RwLock<HashMap<u32, oneshot::Sender<Result<ChannelOpenResult>>>>>,
+    pending_channels: &Arc<RwLock<PendingChannelMap>>,
     command: Option<String>,
     env: HashMap<String, String>,
 ) -> Result<ChannelOpenResult> {
@@ -956,7 +959,9 @@ mod tests {
         assert_eq!(DEFAULT_MAX_PACKET_SIZE, 32768); // 32 KB
 
         // Max packet size should be less than window size
-        assert!(DEFAULT_MAX_PACKET_SIZE < DEFAULT_WINDOW_SIZE);
+        let max_packet = DEFAULT_MAX_PACKET_SIZE;
+        let window = DEFAULT_WINDOW_SIZE;
+        assert!(max_packet < window, "max packet size must be less than window size");
     }
 
     #[tokio::test]
@@ -1004,7 +1009,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pending_channels_cleanup() {
-        let pending_channels: Arc<RwLock<HashMap<u32, oneshot::Sender<Result<ChannelOpenResult>>>>> =
+        let pending_channels: Arc<RwLock<PendingChannelMap>> =
             Arc::new(RwLock::new(HashMap::new()));
 
         // Add some pending channels

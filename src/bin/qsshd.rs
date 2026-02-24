@@ -187,13 +187,7 @@ async fn async_main(args: Args) {
     config.max_connections = args.max_connections;
 
     // Determine transport type
-    let quantum_native = if args.classical {
-        false
-    } else if args.quantum_native {
-        true
-    } else {
-        true  // Default to quantum-native
-    };
+    let quantum_native = !args.classical;
     config.quantum_native = quantum_native;
 
     // Load authorized keys

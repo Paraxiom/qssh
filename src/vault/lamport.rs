@@ -40,7 +40,7 @@ impl LamportKeypair {
             
             // Public key is hash of private key
             let mut hasher = Sha3_256::new();
-            hasher.update(&priv_block);
+            hasher.update(priv_block);
             let mut pub_block = [0u8; 32];
             pub_block.copy_from_slice(&hasher.finalize());
             
@@ -120,7 +120,7 @@ impl LamportKeypair {
                 
                 // Hash the signature block
                 let mut hasher = Sha3_256::new();
-                hasher.update(&signature.blocks[sig_index]);
+                hasher.update(signature.blocks[sig_index]);
                 let computed_pub = hasher.finalize();
                 
                 // Compare with public key block
@@ -192,11 +192,11 @@ impl LamportMerkleTree {
             
             for i in (0..current_level.len()).step_by(2) {
                 let mut hasher = Sha3_256::new();
-                hasher.update(&current_level[i]);
+                hasher.update(current_level[i]);
                 if i + 1 < current_level.len() {
-                    hasher.update(&current_level[i + 1]);
+                    hasher.update(current_level[i + 1]);
                 } else {
-                    hasher.update(&current_level[i]); // Duplicate last node if odd
+                    hasher.update(current_level[i]); // Duplicate last node if odd
                 }
                 
                 let mut parent = [0u8; 32];
@@ -218,7 +218,7 @@ impl LamportMerkleTree {
         
         for _ in 0..self.height {
             // Get sibling node
-            let sibling_index = if current_index % 2 == 0 {
+            let sibling_index = if current_index.is_multiple_of(2) {
                 current_index + 1
             } else {
                 current_index - 1
@@ -237,11 +237,11 @@ impl LamportMerkleTree {
             let mut next_level = Vec::new();
             for i in (0..level_nodes.len()).step_by(2) {
                 let mut hasher = Sha3_256::new();
-                hasher.update(&level_nodes[i]);
+                hasher.update(level_nodes[i]);
                 if i + 1 < level_nodes.len() {
-                    hasher.update(&level_nodes[i + 1]);
+                    hasher.update(level_nodes[i + 1]);
                 } else {
-                    hasher.update(&level_nodes[i]);
+                    hasher.update(level_nodes[i]);
                 }
                 
                 let mut parent = [0u8; 32];

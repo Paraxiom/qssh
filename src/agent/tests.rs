@@ -2,6 +2,7 @@
 //! This module contains comprehensive tests to ensure no shortcuts or TODOs
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use super::super::*;
     use tempfile::TempDir;

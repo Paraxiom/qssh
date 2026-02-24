@@ -97,7 +97,7 @@ async fn test_large_data_transfer() {
 
         // Calculate expected frames
         let max_payload_per_frame = 717; // 768 - 17 (header) - 32 (mac) - 2 (length)
-        let expected_frames = (size + max_payload_per_frame - 1) / max_payload_per_frame;
+        let expected_frames = size.div_ceil(max_payload_per_frame);
 
         println!("      Payload: {} bytes", size);
         println!("      Expected frames: {}", expected_frames);

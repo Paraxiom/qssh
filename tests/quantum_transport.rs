@@ -134,13 +134,13 @@ async fn test_quantum_native_vs_classical() {
     println!("Classical SSH approach (BAD):");
     println!("  ClientHello → ServerHello → KeyExchange → Finished");
     println!("  (Predictable patterns quantum computers can analyze)");
-    println!("");
+    println!();
 
     println!("Quantum-Native approach (GOOD):");
     println!("  →→→→→→→→→→→→→→→→→→→→");
     println!("  ←←←←←←←←←←←←←←←←←←");
     println!("  (Continuous indistinguishable {}-byte frames)", QUANTUM_FRAME_SIZE);
-    println!("");
+    println!();
 
     // Verify our implementation follows quantum-native principles
     assert_eq!(QUANTUM_FRAME_SIZE, 768);

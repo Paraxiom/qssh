@@ -335,8 +335,8 @@ mod security_tests {
 
                 let mut response = vec![0; 256];
                 match stream.read(&mut response) {
-                    Ok(_) => {
-                        let resp_str = String::from_utf8_lossy(&response);
+                    Ok(n) => {
+                        let resp_str = String::from_utf8_lossy(&response[..n]);
                         if resp_str.contains("accepted") {
                             panic!("❌ STARK BYPASS: Invalid proof accepted!");
                         } else {

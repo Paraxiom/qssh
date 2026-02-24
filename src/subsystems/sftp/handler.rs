@@ -137,11 +137,8 @@ impl FileHandle {
 
     /// Close the handle
     pub async fn close(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        match self {
-            FileHandle::File { file, .. } => {
-                file.sync_all().await?;
-            }
-            _ => {}
+        if let FileHandle::File { file, .. } = self {
+            file.sync_all().await?;
         }
         Ok(())
     }

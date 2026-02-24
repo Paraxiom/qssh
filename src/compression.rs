@@ -25,6 +25,7 @@ pub enum CompressionAlgorithm {
 
 impl CompressionAlgorithm {
     /// Parse compression algorithm from string
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "none" => Self::None,
@@ -232,6 +233,12 @@ pub struct CompressionNegotiator {
     client_algorithms: Vec<CompressionAlgorithm>,
     /// Server compression preferences
     server_algorithms: Vec<CompressionAlgorithm>,
+}
+
+impl Default for CompressionNegotiator {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CompressionNegotiator {

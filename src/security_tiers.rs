@@ -7,6 +7,7 @@ use std::fmt;
 
 /// Security tiers for different threat models
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum SecurityTier {
     /// Tier 0: Classical (NOT RECOMMENDED)
     /// - RSA/ECDSA (for compatibility only)
@@ -27,6 +28,7 @@ pub enum SecurityTier {
     /// - Traffic analysis resistance
     /// - Timing obfuscation
     /// - Good for: Most security-conscious users
+    #[default]
     HardenedPQ,
 
     /// Tier 3: Entropy-Enhanced
@@ -138,11 +140,6 @@ impl fmt::Display for SecurityTier {
     }
 }
 
-impl Default for SecurityTier {
-    fn default() -> Self {
-        SecurityTier::HardenedPQ // Safe, practical default
-    }
-}
 
 #[cfg(test)]
 #[allow(deprecated)]

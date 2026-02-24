@@ -24,6 +24,12 @@ pub struct SftpSubsystem {
     next_handle_id: u32,
 }
 
+impl Default for SftpSubsystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SftpSubsystem {
     pub fn new() -> Self {
         let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
@@ -88,7 +94,7 @@ impl SftpSubsystem {
             extensions: vec![],
         };
 
-        Ok(response.to_bytes()?)
+        response.to_bytes()
     }
 
     async fn handle_open(&mut self, msg: OpenMessage) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
@@ -113,7 +119,7 @@ impl SftpSubsystem {
                     message: format!("{}", e),
                     language: "en".to_string(),
                 };
-                return Ok(response.to_bytes()?);
+                return response.to_bytes();
             }
         };
         let handle_id = self.generate_handle();
@@ -124,7 +130,7 @@ impl SftpSubsystem {
             handle: handle_id,
         };
 
-        Ok(response.to_bytes()?)
+        response.to_bytes()
     }
 
     async fn handle_close(&mut self, id: u32, handle: String) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
@@ -225,7 +231,7 @@ impl SftpSubsystem {
                 message: "Not a directory".to_string(),
                 language: "en".to_string(),
             };
-            return Ok(response.to_bytes()?);
+            return response.to_bytes();
         }
 
         // Create directory handle
@@ -238,7 +244,7 @@ impl SftpSubsystem {
             handle: handle_id,
         };
 
-        Ok(response.to_bytes()?)
+        response.to_bytes()
     }
 
     async fn handle_readdir(&mut self, msg: ReadDirMessage) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
@@ -324,7 +330,7 @@ impl SftpSubsystem {
             }],
         };
 
-        Ok(response.to_bytes()?)
+        response.to_bytes()
     }
 
     pub async fn run(&mut self, channel_id: u32, transport: crate::transport::Transport) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

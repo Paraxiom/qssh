@@ -256,14 +256,14 @@ impl FileBackend {
     pub fn new(key_dir: PathBuf, seal_key: [u8; 32]) -> Result<Self> {
         // Create directory if it doesn't exist
         std::fs::create_dir_all(&key_dir)
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
 
         // Set restrictive permissions (owner-only)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&key_dir, std::fs::Permissions::from_mode(0o700))
-                .map_err(|e| QsshError::Io(e))?;
+                .map_err(QsshError::Io)?;
         }
 
         Ok(Self { key_dir, seal_key })

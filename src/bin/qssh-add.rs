@@ -75,11 +75,11 @@ async fn list_keys(client: &AgentClient) {
             } else {
                 println!("The agent has {} key(s):", keys.len());
                 for key in keys {
-                    println!("{} {} {} ({})",
+                    println!("{} {} {} ({:?})",
                         key.public_key.len() * 8,
                         key.fingerprint,
                         key.comment,
-                        format!("{:?}", key.algorithm));
+                        key.algorithm);
                 }
             }
         }

@@ -663,7 +663,7 @@ impl QsshClient {
             match termios::Termios::from_fd(0) {
                 Ok(settings) => {
                     log::debug!("Setting terminal to raw mode");
-                    let mut raw = settings.clone();
+                    let mut raw = settings;
                     termios::cfmakeraw(&mut raw);
                     match termios::tcsetattr(0, termios::TCSANOW, &raw) {
                         Ok(_) => {
@@ -796,7 +796,7 @@ impl QsshClient {
             // Set up SIGWINCH handler for terminal resize
             let mut sigwinch = tokio::signal::unix::signal(
                 tokio::signal::unix::SignalKind::window_change()
-            ).map_err(|e| QsshError::Io(e))?;
+            ).map_err(QsshError::Io)?;
 
             // Interactive mode - read from stdin
             loop {
@@ -908,7 +908,7 @@ impl QsshClient {
         // Restore terminal settings (if we changed them)
         if let Some(settings) = term_settings {
             termios::tcsetattr(0, termios::TCSANOW, &settings)
-                .map_err(|e| QsshError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+                .map_err(|e| QsshError::Io(std::io::Error::other(e)))?;
         }
         
         // Close channel

@@ -322,8 +322,10 @@ pub async fn setup_x11_forwarding(
     }
 
     // Create X11 configuration
-    let mut config = X11Config::default();
-    config.trusted = trusted;
+    let mut config = X11Config {
+        trusted,
+        ..X11Config::default()
+    };
 
     // Find available display number
     for display_num in 10..100 {

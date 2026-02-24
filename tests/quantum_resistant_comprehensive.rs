@@ -268,7 +268,7 @@ async fn test_comprehensive_security_verification() {
 
         // Verify quantum-native properties
         // (In real implementation, ciphertext would be padded to frame size)
-        assert!(ciphertext.len() > 0, "Ciphertext cannot be empty");
+        assert!(!ciphertext.is_empty(), "Ciphertext cannot be empty");
     }
 
     println!("   ✓ {} unique exchanges completed", iterations);

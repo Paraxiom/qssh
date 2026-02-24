@@ -5,14 +5,17 @@ use super::{SymmetricCrypto, QuantumCipher};
 
 /// Cipher algorithm choice
 #[derive(Debug, Clone, Copy)]
+#[derive(Default)]
 pub enum CipherAlgorithm {
     /// AES-256-GCM (quantum-resistant, ~128-bit post-quantum security)
     Aes256Gcm,
     /// SHA3-256 stream cipher (quantum-proof, 256-bit post-quantum security)
+    #[default]
     Sha3Stream,
 }
 
 /// Universal cipher interface
+#[allow(clippy::large_enum_variant)]
 pub enum UniversalCipher {
     Aes(SymmetricCrypto),
     Sha3(QuantumCipher),
@@ -56,9 +59,3 @@ impl UniversalCipher {
     }
 }
 
-impl Default for CipherAlgorithm {
-    fn default() -> Self {
-        // Default to quantum-proof SHA3
-        CipherAlgorithm::Sha3Stream
-    }
-}

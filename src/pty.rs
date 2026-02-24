@@ -48,8 +48,7 @@ impl Pty {
         
         unsafe {
             if openpty(&mut master, &mut slave, ptr::null_mut(), ptr::null_mut(), ptr::null_mut()) != 0 {
-                return Err(QsshError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other, 
+                return Err(QsshError::Io(std::io::Error::other(
                     "Failed to allocate PTY"
                 )));
             }
@@ -58,8 +57,7 @@ impl Pty {
             if grantpt(master) != 0 {
                 libc::close(master);
                 libc::close(slave);
-                return Err(QsshError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other, 
+                return Err(QsshError::Io(std::io::Error::other(
                     "Failed to grant PTY access"
                 )));
             }
@@ -68,8 +66,7 @@ impl Pty {
             if unlockpt(master) != 0 {
                 libc::close(master);
                 libc::close(slave);
-                return Err(QsshError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other, 
+                return Err(QsshError::Io(std::io::Error::other(
                     "Failed to unlock PTY"
                 )));
             }
@@ -100,8 +97,7 @@ impl Pty {
         
         unsafe {
             if libc::ioctl(self.master, TIOCSWINSZ, &ws) != 0 {
-                return Err(QsshError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other, 
+                return Err(QsshError::Io(std::io::Error::other(
                     "Failed to set terminal size"
                 )));
             }
@@ -117,8 +113,7 @@ impl Pty {
         
         unsafe {
             if libc::ioctl(self.master, TIOCGWINSZ, &mut ws) != 0 {
-                return Err(QsshError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other, 
+                return Err(QsshError::Io(std::io::Error::other(
                     "Failed to get terminal size"
                 )));
             }

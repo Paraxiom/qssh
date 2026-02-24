@@ -235,7 +235,7 @@ impl SessionCache {
         let session_file = self.cache_dir.join(format!("{}.session", session_id));
         if session_file.exists() {
             std::fs::remove_file(session_file)
-                .map_err(|e| QsshError::Io(e))?;
+                .map_err(QsshError::Io)?;
         }
 
         Ok(())
@@ -251,7 +251,7 @@ impl SessionCache {
                 .map_err(|e| QsshError::Protocol(format!("Failed to serialize ticket: {}", e)))?;
 
             std::fs::write(session_file, data)
-                .map_err(|e| QsshError::Io(e))?;
+                .map_err(QsshError::Io)?;
         }
 
         Ok(())
@@ -266,7 +266,7 @@ impl SessionCache {
         }
 
         let data = std::fs::read(session_file)
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
 
         let ticket: SessionTicket = bincode::deserialize(&data)
             .map_err(|e| QsshError::Protocol(format!("Failed to deserialize ticket: {}", e)))?;

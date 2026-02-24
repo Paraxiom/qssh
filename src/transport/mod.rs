@@ -167,7 +167,7 @@ impl Transport {
         // Read nonce and ciphertext
         let mut frame = vec![0u8; frame_length];
         reader.read_exact(&mut frame).await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
         
         let (nonce, ciphertext) = frame.split_at(12);
         
@@ -277,7 +277,7 @@ impl Transport {
     pub async fn close(&self) -> Result<()> {
         let mut writer = self.writer.lock().await;
         writer.shutdown().await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
         Ok(())
     }
 }

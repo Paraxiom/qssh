@@ -296,8 +296,8 @@ impl P2pSession {
             Ok(self.keypair.compute_shared_secret(
                 &our_share,
                 &verified_share,
-                &self.our_info.id.as_bytes(),
-                &peer_info.id.as_bytes()
+                self.our_info.id.as_bytes(),
+                peer_info.id.as_bytes()
             ))
         } else {
             // Receive peer's share first
@@ -334,8 +334,8 @@ impl P2pSession {
             Ok(self.keypair.compute_shared_secret(
                 &our_share,
                 &verified_share,
-                &self.our_info.id.as_bytes(),
-                &peer_info.id.as_bytes()
+                self.our_info.id.as_bytes(),
+                peer_info.id.as_bytes()
             ))
         }
     }

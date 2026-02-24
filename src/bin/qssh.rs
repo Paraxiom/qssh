@@ -206,13 +206,7 @@ async fn main() {
     };
 
     // Determine transport type
-    let quantum_native = if args.classical {
-        false
-    } else if args.quantum_native {
-        true
-    } else {
-        true  // Default to quantum-native
-    };
+    let quantum_native = !args.classical;
 
     // Create configuration
     let config = QsshConfig {

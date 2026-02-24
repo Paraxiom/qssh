@@ -24,6 +24,12 @@ pub struct SubsystemRegistry {
     subsystems: Vec<Box<dyn Subsystem>>,
 }
 
+impl Default for SubsystemRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SubsystemRegistry {
     pub fn new() -> Self {
         let mut registry = SubsystemRegistry {

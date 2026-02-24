@@ -637,7 +637,7 @@ impl SigningClient {
     pub async fn health(&self) -> Result<bool> {
         let req = SignRequest::Health;
         let resp = self.request(&req).await?;
-        Ok(resp.locked.unwrap_or(true) == false)
+        Ok(!resp.locked.unwrap_or(true))
     }
 }
 

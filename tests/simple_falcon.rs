@@ -14,7 +14,7 @@ fn test_basic_key_share_creation() {
 
     // Basic validations
     assert_eq!(share.len(), 32, "Key share should be 32 bytes");
-    assert!(signature.len() > 0, "Signature should not be empty");
+    assert!(!signature.is_empty(), "Signature should not be empty");
 
     // Check that signature is reasonable size for Falcon detached signature
     // Falcon-512 detached signature is ~690 bytes

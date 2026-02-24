@@ -240,7 +240,7 @@ impl QsshAgent {
             .ok_or_else(|| QsshError::Protocol("Key not found in agent".into()))?;
 
         // Delegate to the standalone sign_with_key function
-        sign_with_key(&key, data).await
+        sign_with_key(key, data).await
     }
 
     /// List all keys in the agent
@@ -255,7 +255,7 @@ impl QsshAgent {
 
         for (public_key, stored_key) in keys.iter() {
             let info = KeyInfo {
-                algorithm: stored_key.algorithm.clone(),
+                algorithm: stored_key.algorithm,
                 public_key: public_key.clone(),
                 comment: stored_key.comment.clone(),
                 fingerprint: compute_fingerprint(public_key),
@@ -572,6 +572,12 @@ fn compute_fingerprint(public_key: &[u8]) -> String {
 /// Agent client for communicating with the agent
 pub struct AgentClient {
     socket_path: PathBuf,
+}
+
+impl Default for AgentClient {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AgentClient {

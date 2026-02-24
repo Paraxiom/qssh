@@ -35,11 +35,20 @@ pub enum ForwardType {
     },
 }
 
+/// Type alias for the remote-forward mapping table.
+type ForwardMapping = HashMap<(String, u16), (String, u16)>;
+
 /// Registry mapping (bind_host, bind_port) on the server to (local_host, local_port) on the client.
 /// Used by the client to know where to connect when a ForwardedTcpip channel arrives.
 #[derive(Debug, Clone)]
 pub struct RemoteForwardRegistry {
-    mappings: Arc<Mutex<HashMap<(String, u16), (String, u16)>>>,
+    mappings: Arc<Mutex<ForwardMapping>>,
+}
+
+impl Default for RemoteForwardRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RemoteForwardRegistry {
@@ -74,6 +83,12 @@ impl RemoteForwardRegistry {
 #[derive(Debug, Clone)]
 pub struct ForwardedChannelRouter {
     senders: Arc<Mutex<HashMap<u32, mpsc::Sender<Vec<u8>>>>>,
+}
+
+impl Default for ForwardedChannelRouter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ForwardedChannelRouter {

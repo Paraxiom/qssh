@@ -318,6 +318,7 @@ async fn handle_connection(
 }
 
 /// Handle client message
+#[allow(clippy::too_many_arguments)]
 async fn handle_client_message(
     msg: Message,
     transport: &Transport,
@@ -639,6 +640,7 @@ async fn handle_remote_forward_connection(
 }
 
 /// Handle channel message
+#[allow(clippy::too_many_arguments)]
 async fn handle_channel_message(
     msg: ChannelMessage,
     transport: &Transport,

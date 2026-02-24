@@ -44,7 +44,7 @@ impl QuantumCipher {
             let mut hasher = Sha3_256::new();
             hasher.update(&self.key);
             hasher.update(nonce);
-            hasher.update(&block_counter.to_le_bytes());
+            hasher.update(block_counter.to_le_bytes());
             
             let block = hasher.finalize();
             keystream.extend_from_slice(&block);
@@ -62,7 +62,7 @@ impl QuantumCipher {
         let mut hasher = Sha3_256::new();
         hasher.update(&self.key);
         hasher.update(b"nonce");
-        hasher.update(&self.nonce_counter.to_le_bytes());
+        hasher.update(self.nonce_counter.to_le_bytes());
         let nonce_hash = hasher.finalize();
         let nonce = nonce_hash[..16].to_vec();
         

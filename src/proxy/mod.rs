@@ -408,8 +408,8 @@ pub struct JumpHost {
 impl JumpHost {
     /// Parse jump host specification (e.g., "user@host:port")
     pub fn parse(spec: &str) -> Result<Self> {
-        let mut username = String::from(whoami::username());
-        let hostname;
+        let mut username = whoami::username();
+        
         let mut port = 22222; // QSSH default port
 
         // Parse user@host:port format
@@ -423,7 +423,7 @@ impl JumpHost {
 
         // Parse host:port
         let host_parts: Vec<&str> = host_part.split(':').collect();
-        hostname = host_parts[0].to_string();
+        let hostname = host_parts[0].to_string();
         if host_parts.len() == 2 {
             port = host_parts[1].parse()
                 .map_err(|_| QsshError::Config(format!("Invalid port: {}", host_parts[1])))?;

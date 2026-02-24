@@ -14,7 +14,7 @@ fn test_falcon_detached_signatures_basic() {
         .expect("Failed to create Alice's key share");
 
     assert_eq!(alice_share.len(), 32, "Key share should be 32 bytes");
-    assert!(alice_signature.len() > 0, "Signature should not be empty");
+    assert!(!alice_signature.is_empty(), "Signature should not be empty");
 
     // Get public keys
     let alice_falcon_pk = alice.public_bytes();

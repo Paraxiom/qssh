@@ -262,10 +262,8 @@ impl SftpClient {
         let close_msg = SftpMessage::Close { id, handle };
         self.send_sftp(&close_msg).await?;
 
-        match self.recv_sftp().await? {
-            SftpMessage::Status { code: StatusCode::Ok, .. } => {}
-            _ => {} // Ignore close errors on download
-        }
+        // Ignore close errors on download
+        let _ = self.recv_sftp().await?;
 
         Ok(data)
     }

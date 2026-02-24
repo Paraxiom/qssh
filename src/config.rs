@@ -8,6 +8,7 @@ use crate::{Result, QsshError, QsshConfig, PortForward, PqAlgorithm, KexAlgorith
 
 /// Host configuration from config file
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct HostConfig {
     pub hostname: Option<String>,
     pub port: Option<u16>,
@@ -30,30 +31,6 @@ pub struct HostConfig {
     pub server_alive_count_max: Option<u32>,
 }
 
-impl Default for HostConfig {
-    fn default() -> Self {
-        Self {
-            hostname: None,
-            port: None,
-            user: None,
-            identity_file: None,
-            local_forward: Vec::new(),
-            remote_forward: Vec::new(),
-            dynamic_forward: Vec::new(),
-            pq_algorithm: None,
-            kex_algorithm: None,
-            use_qkd: false,
-            qkd_endpoint: None,
-            qkd_cert_path: None,
-            qkd_key_path: None,
-            qkd_ca_path: None,
-            key_rotation_interval: None,
-            compression: false,
-            server_alive_interval: None,
-            server_alive_count_max: None,
-        }
-    }
-}
 
 /// SSH config file parser
 pub struct ConfigParser {

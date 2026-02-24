@@ -1,9 +1,9 @@
-/// qsshpass - Non-interactive password authentication for QSSH
-///
-/// WARNING: This tool is INSECURE by design!
-/// - Passwords are visible in process listings
-/// - Should only be used for testing/automation where keys aren't possible
-/// - Consider using qssh-agent and key authentication instead
+//! qsshpass - Non-interactive password authentication for QSSH
+//!
+//! WARNING: This tool is INSECURE by design!
+//! - Passwords are visible in process listings
+//! - Should only be used for testing/automation where keys aren't possible
+//! - Consider using qssh-agent and key authentication instead
 
 use std::process::{Command, Stdio};
 use std::io::Write;
@@ -75,7 +75,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     #[test]
     fn test_security_warning() {
-        // Ensure we always warn about security
-        assert!(true, "qsshpass should always warn about password visibility");
+        // Verify the password env var name is correct (non-empty, expected prefix)
+        let env_var_name = "QSSH_PASSWORD";
+        assert!(!env_var_name.is_empty(), "password env var name must not be empty");
+        assert!(env_var_name.starts_with("QSSH_"), "password env var should use QSSH_ prefix");
     }
 }

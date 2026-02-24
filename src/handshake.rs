@@ -137,7 +137,7 @@ impl<'a> ClientHandshake<'a> {
         let identity_pubkey = match fs::read_to_string(&pubkey_path) {
             Ok(data) => {
                 // Parse the public key from the file format: "qssh-algorithm base64data comment"
-                let parts: Vec<&str> = data.trim().split_whitespace().collect();
+                let parts: Vec<&str> = data.split_whitespace().collect();
                 if parts.len() >= 2 {
                     // Decode base64 public key
                     use base64::Engine;
@@ -783,7 +783,7 @@ impl ServerHandshake {
                 use crate::certificate::{SshCertificate, CertificateValidator, ValidationResult};
 
                 // Deserialize the certificate
-                match bincode::deserialize::<SshCertificate>(&certificate_data) {
+                match bincode::deserialize::<SshCertificate>(certificate_data) {
                     Ok(cert) => {
                         // Create a validator with the server's trusted CAs
                         // For now, accept any CA whose signature verifies

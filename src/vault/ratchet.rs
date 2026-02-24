@@ -130,13 +130,13 @@ impl DoubleRatchet {
         let mut key2 = [0u8; 32];
         
         let mut hasher1 = Sha3_256::new();
-        hasher1.update(&output);
-        hasher1.update(&[0x01]);
+        hasher1.update(output);
+        hasher1.update([0x01]);
         key1.copy_from_slice(&hasher1.finalize());
         
         let mut hasher2 = Sha3_256::new();
-        hasher2.update(&output);
-        hasher2.update(&[0x02]);
+        hasher2.update(output);
+        hasher2.update([0x02]);
         key2.copy_from_slice(&hasher2.finalize());
         
         (key1, key2)

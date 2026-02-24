@@ -36,7 +36,7 @@ fn test_sphincs_sign_verify_roundtrip() {
 fn test_no_c_ffi_dependencies() {
     // Verify that pqcrypto C-FFI types are not referenced in crypto module
     let output = std::process::Command::new("grep")
-        .args(&["-rn", "pqcrypto_falcon\\|pqcrypto_sphincsplus\\|pqcrypto_traits", "src/crypto/"])
+        .args(["-rn", "pqcrypto_falcon\\|pqcrypto_sphincsplus\\|pqcrypto_traits", "src/crypto/"])
         .output()
         .expect("Failed to run grep");
 

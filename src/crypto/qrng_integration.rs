@@ -76,7 +76,7 @@ impl QuantumRng {
                 let mut hasher = Sha256::new();
                 hasher.update(b"QSSH-QRNG-SEED-V1");
                 hasher.update(&quantum_bytes);
-                hasher.update(&os_bytes);
+                hasher.update(os_bytes);
                 let seed: [u8; 32] = hasher.finalize().into();
 
                 self.rng = ChaCha20Rng::from_seed(seed);

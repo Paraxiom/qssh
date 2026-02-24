@@ -47,7 +47,7 @@ fn test_falcon512_key_generation_succeeds() {
     let key_path_str = key_path.to_str().unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_qssh-keygen"))
-        .args(&["-t", "falcon512", "-y", "-f", key_path_str, "-C", "test@qssh"])
+        .args(["-t", "falcon512", "-y", "-f", key_path_str, "-C", "test@qssh"])
         .output()
         .expect("failed to execute qssh-keygen");
 
@@ -76,7 +76,7 @@ fn test_sphincsplus_key_generation_succeeds() {
     let key_path_str = key_path.to_str().unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_qssh-keygen"))
-        .args(&["-t", "sphincs+", "-y", "-f", key_path_str, "-C", "test@qssh"])
+        .args(["-t", "sphincs+", "-y", "-f", key_path_str, "-C", "test@qssh"])
         .output()
         .expect("failed to execute qssh-keygen");
 
@@ -100,7 +100,7 @@ fn test_private_key_permissions() {
     let key_path_str = key_path.to_str().unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_qssh-keygen"))
-        .args(&["-t", "falcon512", "-y", "-f", key_path_str])
+        .args(["-t", "falcon512", "-y", "-f", key_path_str])
         .output()
         .expect("failed to execute qssh-keygen");
 
@@ -120,7 +120,7 @@ fn test_private_key_format() {
     let key_path_str = key_path.to_str().unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_qssh-keygen"))
-        .args(&["-t", "falcon512", "-y", "-f", key_path_str])
+        .args(["-t", "falcon512", "-y", "-f", key_path_str])
         .output()
         .expect("failed to execute qssh-keygen");
 

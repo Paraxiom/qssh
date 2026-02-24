@@ -156,11 +156,11 @@ impl QuantumTransport {
         // Send ciphertext length and ciphertext to server
         let ciphertext_len = ciphertext.len() as u32;
         writer.write_all(&ciphertext_len.to_be_bytes()).await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
         writer.write_all(&ciphertext).await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
         writer.flush().await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
 
         log::debug!("Client: KEM ciphertext sent to server");
 
@@ -190,7 +190,7 @@ impl QuantumTransport {
         // Read ciphertext length
         let mut len_bytes = [0u8; HANDSHAKE_HEADER_SIZE];
         reader.read_exact(&mut len_bytes).await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
         let ciphertext_len = u32::from_be_bytes(len_bytes) as usize;
 
         // Validate ciphertext length to prevent DoS
@@ -205,7 +205,7 @@ impl QuantumTransport {
         // Read ciphertext
         let mut ciphertext = vec![0u8; ciphertext_len];
         reader.read_exact(&mut ciphertext).await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
 
         log::debug!(
             "Server: received KEM ciphertext: {} bytes",
@@ -267,9 +267,9 @@ impl QuantumTransport {
         };
 
         writer.write_all(frame_bytes).await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
         writer.flush().await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
 
         log::trace!("Quantum frame sent: type={:?}, sequence={}", frame_type, sequence);
 
@@ -288,7 +288,7 @@ impl QuantumTransport {
         // Read exactly one frame
         let mut frame_bytes = vec![0u8; QUANTUM_FRAME_SIZE];
         reader.read_exact(&mut frame_bytes).await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
 
         // Parse frame
         let frame = unsafe {
@@ -411,9 +411,9 @@ impl QuantumTransport {
         };
 
         writer.write_all(frame_bytes).await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
         writer.flush().await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
 
         log::trace!("Dummy frame sent: sequence={}", sequence);
         Ok(())
@@ -489,7 +489,7 @@ impl QuantumTransport {
     pub async fn close(&self) -> Result<()> {
         let mut writer = self.writer.lock().await;
         writer.shutdown().await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
         Ok(())
     }
 }

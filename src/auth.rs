@@ -105,7 +105,7 @@ impl AuthorizedKeysManager {
     /// Load keys from a file
     async fn load_keys_from_file(&self, path: &Path) -> Result<Vec<AuthorizedKey>> {
         let file = fs::File::open(path).await
-            .map_err(|e| QsshError::Io(e))?;
+            .map_err(QsshError::Io)?;
         
         let reader = BufReader::new(file);
         let mut lines = reader.lines();
@@ -131,7 +131,7 @@ impl AuthorizedKeysManager {
     fn parse_key_line(&self, line: &str) -> Option<AuthorizedKey> {
         let mut parts = line.split_whitespace();
         let mut key_type = parts.next()?;
-        let key_data;
+        
         let mut comment = None;
         let mut options = KeyOptions::default();
         
@@ -143,7 +143,7 @@ impl AuthorizedKeysManager {
         }
         
         // Get key data
-        key_data = parts.next()?.to_string();
+        let key_data = parts.next()?.to_string();
         
         // Rest is comment
         let remaining: Vec<&str> = parts.collect();
@@ -167,11 +167,11 @@ impl AuthorizedKeysManager {
     
     /// Parse key options
     fn parse_options(&self, options_str: &str) -> Option<KeyOptions> {
-        let mut options = KeyOptions::default();
-        
-        // Default permissions for QSSH
-        options.pty = true;
-        options.port_forwarding = true;
+        let mut options = KeyOptions {
+            pty: true,
+            port_forwarding: true,
+            ..KeyOptions::default()
+        };
         
         // Parse comma-separated options
         for option in options_str.split(',') {

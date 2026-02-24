@@ -101,7 +101,7 @@ async fn main() {
     match args.command {
         NodeCommand::Connect {
             node, port, local, sign_socket,
-            no_unlock, verbose, quantum_native, classical, no_reconnect,
+            no_unlock, verbose, quantum_native: _, classical, no_reconnect,
         } => {
             // Initialize logging
             if verbose {
@@ -155,7 +155,7 @@ async fn main() {
             let server = format!("{}:{}", actual_host, actual_port);
 
             // Determine transport
-            let use_quantum = if classical { false } else if quantum_native { true } else { true };
+            let use_quantum = !classical;
 
             eprintln!("QSSH Node Connect v{}", env!("CARGO_PKG_VERSION"));
             eprintln!("Connecting to {} as {}...", server, username);

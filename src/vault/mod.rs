@@ -71,6 +71,12 @@ struct LamportKeyChain {
     _root_seed: [u8; 32],
 }
 
+impl Default for QuantumVault {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QuantumVault {
     /// Create a new quantum vault
     pub fn new() -> Self {
@@ -187,11 +193,10 @@ impl QuantumVault {
             .ok_or_else(|| QsshError::Crypto("Key not found".into()))?;
 
         // Check usage limit
-        if protected.max_uses > 0 {
-            if protected.usage_count >= protected.max_uses {
+        if protected.max_uses > 0
+            && protected.usage_count >= protected.max_uses {
                 return Err(QsshError::Crypto("Key usage limit exceeded".into()));
             }
-        }
 
         // Decrypt key material (briefly in memory)
         let mut key_data = self.decrypt_key(&protected.encrypted_data, &seal_key)?;
@@ -328,8 +333,8 @@ impl QuantumVault {
         for i in 0..count {
             let mut key_seed = [0u8; 32];
             let mut hasher = Sha3_256::new();
-            hasher.update(&root_seed);
-            hasher.update(&i.to_le_bytes());
+            hasher.update(root_seed);
+            hasher.update(i.to_le_bytes());
             key_seed.copy_from_slice(&hasher.finalize());
 
             keypairs.push(LamportKeypair::generate(&key_seed));

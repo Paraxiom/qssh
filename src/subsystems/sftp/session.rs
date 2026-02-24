@@ -10,6 +10,12 @@ pub struct SftpSession {
     username: String,
 }
 
+impl Default for SftpSession {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SftpSession {
     /// Create a new SFTP session
     pub fn new() -> Self {

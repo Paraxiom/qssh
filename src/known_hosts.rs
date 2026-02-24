@@ -103,7 +103,7 @@ impl KnownHosts {
             if let Ok(entry) = self.parse_line(&line) {
                 let hostname = entry.hostname.clone();
                 self.entries.entry(hostname)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(entry);
             }
         }
@@ -262,7 +262,7 @@ impl KnownHosts {
 
         // Add to memory
         self.entries.entry(lookup_key)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(entry.clone());
 
         // Append to file
@@ -396,16 +396,14 @@ impl KnownHosts {
             return true;
         }
 
-        if pattern.starts_with("*.") {
+        if let Some(domain) = pattern.strip_prefix("*.") {
             // Match domain wildcard
-            let domain = &pattern[2..];
             return hostname.ends_with(domain);
         }
 
         // OpenSSH hashed hostname format: |1|<base64-salt>|<base64-hash>
         // The hash is HMAC-SHA1(salt, hostname). We recompute and compare.
-        if pattern.starts_with("|1|") {
-            let remainder = &pattern[3..];
+        if let Some(remainder) = pattern.strip_prefix("|1|") {
             if let Some(sep) = remainder.find('|') {
                 let salt_b64 = &remainder[..sep];
                 let hash_b64 = &remainder[sep + 1..];
@@ -543,7 +541,7 @@ mod tests {
         let hash = mac.finalize().into_bytes();
 
         let salt_b64 = BASE64.encode(salt);
-        let hash_b64 = BASE64.encode(&hash);
+        let hash_b64 = BASE64.encode(hash);
         let pattern = format!("|1|{}|{}", salt_b64, hash_b64);
 
         // Correct hostname should match
