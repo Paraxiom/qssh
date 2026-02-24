@@ -2,7 +2,7 @@
 
 **Last updated**: 2026-02-23
 **Current version**: 0.4.0 (published on crates.io)
-**Tests**: 154 unit passing (+ 18 QKD feature tests), 0 ignored, 0 failed
+**Tests**: 229 passing (154 unit + 75 integration), 0 ignored, 0 failed
 **Warnings**: 0 (enforced in CI)
 **Deployed**: Alice (51.79.26.123), Docker container `qsshd-server` on port 22222
 **Crypto backend**: Pure Rust (fn-dsa 0.3 + slh-dsa 0.0.3) — zero C FFI
