@@ -4,18 +4,19 @@
 [![Documentation](https://docs.rs/qssh/badge.svg)](https://docs.rs/qssh)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE-MIT)
 [![License: Apache](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE-APACHE)
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-blue.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-blue.svg)](https://www.rust-lang.org)
 
-**Post-quantum secure shell** implementing NIST-standardized algorithms (Falcon, SPHINCS+, ML-KEM) with quantum-resistant protocol design. Built for organizations preparing for the post-quantum transition.
+**Post-quantum secure shell** implementing NIST-standardized algorithms (Falcon-512, SPHINCS+, ML-KEM) with quantum-resistant protocol design. **Pure Rust** — zero C FFI, zero `unsafe` in crypto paths. Built for organizations preparing for the post-quantum transition.
 
 ## Security Status
 
 | Component | Status | Details |
 |-----------|--------|---------|
-| **NIST PQC Algorithms** | Implemented | Falcon-512/1024, SPHINCS+-SHA256, ML-KEM |
+| **NIST PQC Algorithms** | Implemented | Falcon-512 (fn-dsa), SPHINCS+ (slh-dsa), ML-KEM |
+| **Crypto Backend** | Pure Rust | Zero C FFI — fn-dsa 0.3 + slh-dsa 0.0.3 + ml-kem |
 | **Protocol Hardening** | Implemented | 768-byte uniform frames, no metadata leakage |
-| **Test Coverage** | 156+ tests | Library + integration tests passing (0 warnings) |
-| **Production Hardening** | Implemented | No panics in production paths, proper error handling |
+| **Test Coverage** | 229 tests | 154 unit + 75 integration, 0 ignored, 0 warnings |
+| **Production Hardening** | Implemented | Argon2id passwords, audit logging, zeroization |
 | **Formal Verification** | Complete | 3-tier: Kani (30) + Verus (20) + Lean 4 (67 theorems) |
 | **Formal Security Audit** | Not yet performed | Recommended before production deployment |
 
@@ -93,32 +94,48 @@ qsshd --security-tier t2
 
 ## Feature Status
 
-**20/21 core SSH features implemented**
+**All core SSH features implemented** (+ PQ-specific extras)
 
-### Implemented
+### Core SSH
 - Interactive shell sessions with PTY support + SIGWINCH resize
-- Command execution (`qssh user@host -c "command"`)
-- Post-quantum key exchange (Falcon-512, SPHINCS+, ML-KEM)
-- SFTP file transfer
+- Command execution (`qssh user@host -c "command"`) with exit status propagation
+- Post-quantum key exchange (Falcon-512, SPHINCS+, ML-KEM) — pure Rust
+- SFTP file transfer (SFTPv3 subsystem + `qscp` client)
 - Port forwarding (-L local, -R remote, -D dynamic/SOCKS5)
-- ProxyJump (`-J user@jumphost`) with DirectTcpip channel tunneling
-- Config file parsing (~/.qssh/config)
-- Public key and password authentication
+- ProxyJump (`-J user@jumphost`) with multi-hop chaining
+- SSH agent forwarding (`-A`) with per-session sockets
+- Config file parsing (~/.qssh/config with Host stanzas)
+- Public key authentication (PQ-only), password auth (Argon2id)
+- Certificate-based authentication
 - SSH agent support (qssh-agent, qssh-add)
 - X11 forwarding (-X, -Y)
 - Connection multiplexing (-S ControlMaster/ControlClient)
-- Known hosts management (TOFU)
+- Known hosts management (TOFU with hashed hostnames)
 - Compression (zlib, zstd, lz4)
-- Session resumption
+- Session resumption (ticket encryption with HMAC-SHA256)
 - Auto-reconnect with exponential backoff (--persistent)
-- Automatic key rotation (configurable interval, Falcon rekey)
+- Automatic key rotation (configurable interval)
 - Server daemonization (--daemon, PID file, double-fork)
-- Host key persistence (SPHINCS+/Falcon serialization)
-- Signing service for node operators (qssh-sign, vault + Lamport OTS)
+
+### PQ-Specific
+- 768-byte uniform quantum frames (traffic analysis resistance)
+- Security tiers T0-T5 (configurable threat model)
+- QRNG entropy integration (T3+)
+- QKD integration via ETSI API (T4+)
+- BB84 protocol with noise model and QBER tracking
+- HSM key storage backend (Software, File, PKCS#11)
+- Hash-chained JSONL audit logging
+- Password zeroization (zeroize crate)
+
+### Operator Tools
+- Signing service (qssh-sign, vault + Lamport OTS)
 - One-liner node connect (qssh-node, auto-binds standard ports)
+- Key generation (qssh-keygen — Falcon-512 + SPHINCS+)
+- Password management (qssh-passwd with Argon2id)
 
 ### Not Implemented
 - GSSAPI/Kerberos authentication (stub, feature-gated)
+- FIPS 140-3 validation (requires formal process)
 
 ## Architecture
 
@@ -153,12 +170,14 @@ qsshd --security-tier t2
 
 ## Cryptographic Algorithms
 
-| Component | Default | Alternative | NIST Status |
-|-----------|---------|-------------|-------------|
-| Signatures | Falcon-512 | SPHINCS+-SHA256 | FIPS 204, 205 |
-| Key Exchange | ML-KEM-768 | ML-KEM-1024 | FIPS 203 |
-| Encryption | AES-256-GCM | ChaCha20-Poly1305 | FIPS 197 |
-| KDF | HKDF-SHA256 | SHA3-256 | SP 800-56C |
+| Component | Default | Crate | NIST Status |
+|-----------|---------|-------|-------------|
+| Signatures | Falcon-512 | fn-dsa 0.3 (Thomas Pornin) | FIPS 204 |
+| Signatures | SPHINCS+-SHA2-128s | slh-dsa 0.0.3 (RustCrypto) | FIPS 205 |
+| Key Exchange | ML-KEM-768 | ml-kem (RustCrypto) | FIPS 203 |
+| Encryption | AES-256-GCM | aes-gcm | FIPS 197 |
+| KDF | HKDF-SHA256 | hkdf | SP 800-56C |
+| Password Hash | Argon2id | argon2 | RFC 9106 |
 
 ## Performance
 
@@ -237,9 +256,10 @@ let ratchet = PqTripleRatchet::init_initiator_with_config(
 
 ## Known Limitations
 
-- **Falcon on macOS**: pqcrypto library segfaults on some macOS versions (use SPHINCS+ as workaround)
-- **No SSH Agent Forwarding**: Security review pending
-- **Performance**: PQC signatures larger and slower than classical (expected tradeoff)
+- **Not wire-compatible with OpenSSH** — custom binary protocol over TCP
+- **PQ-only authentication** — no RSA/ECDSA acceptance (by design)
+- **Default port 22222** — avoids conflict with system sshd
+- **PQC signatures larger and slower than classical** — expected tradeoff for quantum resistance
 
 ## Formal Verification
 
@@ -267,10 +287,15 @@ cd lean && lake build  # 0 errors, 0 sorries
 
 ## Roadmap
 
+- [x] Certificate-based authentication
+- [x] HSM key storage backend
+- [x] SSH agent forwarding
+- [x] Audit logging (hash-chained JSONL)
+- [x] Argon2id password hashing
 - [ ] Formal security audit
-- [ ] Certificate-based authentication
-- [ ] Hardware security module (HSM) integration
-- [ ] FIPS 140-3 validation path
+- [ ] FIPS 140-3 validation
+- [ ] P2P discovery
+- [ ] Blockchain-based key registry (QuantumHarmony)
 
 ## Documentation
 
@@ -290,8 +315,10 @@ at your option.
 ## Acknowledgments
 
 - NIST Post-Quantum Cryptography standardization team
+- [fn-dsa](https://crates.io/crates/fn-dsa) — Thomas Pornin's pure-Rust Falcon implementation
+- [slh-dsa](https://crates.io/crates/slh-dsa) — RustCrypto SPHINCS+ implementation
+- [ml-kem](https://crates.io/crates/ml-kem) — RustCrypto ML-KEM implementation
 - Signal Protocol research (SPQR, Triple Ratchet)
-- PQClean reference implementations
 - QuantumHarmony blockchain integration
 
 ---
