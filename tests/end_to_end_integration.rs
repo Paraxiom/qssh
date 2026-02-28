@@ -314,7 +314,11 @@ fn test_memory_safety() {
 }
 
 /// Test 9: Concurrency and thread safety
-#[tokio::test]
+///
+/// Uses spawn_blocking because SPHINCS+ sign/verify is CPU-bound
+/// (~5s per sign in debug mode). 4 threads × 1 iteration is sufficient
+/// to verify Send+Sync safety without burning 30+ minutes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_concurrency() {
     println!("🧵 Testing concurrency and thread safety...");
 
@@ -325,26 +329,22 @@ async fn test_concurrency() {
     let (pk, _) = kem.public_keys();
     let pk = Arc::new(pk);
 
-    // Spawn multiple concurrent operations
     let mut handles = Vec::new();
 
-    for i in 0..10 {
+    for i in 0..4 {
         let kem_clone = kem.clone();
         let pk_clone = pk.clone();
 
-        let handle = tokio::spawn(async move {
-            for j in 0..10 {
-                let (ciphertext, secret) = kem_clone.encapsulate(&pk_clone).unwrap();
-                let decrypted = kem_clone.decapsulate(&ciphertext, &pk_clone).unwrap();
-                assert_eq!(secret, decrypted, "Thread {} iteration {} failed", i, j);
-            }
-            i // Return thread ID
+        let handle = tokio::task::spawn_blocking(move || {
+            let (ciphertext, secret) = kem_clone.encapsulate(&pk_clone).unwrap();
+            let decrypted = kem_clone.decapsulate(&ciphertext, &pk_clone).unwrap();
+            assert_eq!(secret, decrypted, "Thread {} failed", i);
+            i
         });
 
         handles.push(handle);
     }
 
-    // Wait for all threads to complete
     for handle in handles {
         let thread_id = handle.await.unwrap();
         println!("   ✓ Thread {} completed successfully", thread_id);
