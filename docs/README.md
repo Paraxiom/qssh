@@ -43,5 +43,5 @@ Start with:
 
 See:
 1. [security/security-analysis.md](security/security-analysis.md) for threat model
-2. [SECURITY.md](../SECURITY.md) for vulnerability reporting
+2. [SECURITY.md](SECURITY.md) for vulnerability reporting
 3. [whitepaper/QSSH_Whitepaper.pdf](whitepaper/QSSH_Whitepaper.pdf) for academic analysis

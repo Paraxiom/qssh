@@ -283,7 +283,7 @@ let ratchet = PqTripleRatchet::init_initiator_with_config(
 cd lean && lake build  # 0 errors, 0 sorries
 ```
 
-**Paper**: [162 Lean 4 Theorems for Post-Quantum Infrastructure](https://doi.org/10.5281/zenodo.18663125) (Zenodo, Feb 2026)
+**Paper**: [649 Lean 4 Theorems for Post-Quantum Infrastructure](https://doi.org/10.5281/zenodo.18663125) (Zenodo, Feb 2026)
 
 ## Roadmap
 
@@ -297,12 +297,28 @@ cd lean && lake build  # 0 errors, 0 sorries
 - [ ] P2P discovery
 - [ ] Blockchain-based key registry (QuantumHarmony)
 
+## Project Structure
+
+```
+├── src/              Rust source (lib + 9 binaries)
+├── tests/            Cargo integration tests
+├── lean/             Lean 4 formal proofs (67 theorems)
+├── kani-proofs/      Kani verification harnesses (30)
+├── verus-proofs/     Verus functional correctness proofs (20)
+├── docs/             Documentation (changelog, milestones, security guides)
+├── scripts/          Build, Docker, and test scripts
+├── examples/         Usage examples
+├── Dockerfile        Multi-stage Docker build
+└── docker-compose.yml
+```
+
 ## Documentation
 
 - [API Documentation](https://docs.rs/qssh)
-- [Production Readiness](PRODUCTION_READINESS.md)
-- [Milestones & Roadmap](MILESTONES.md)
-- [Changelog](CHANGELOG.md)
+- [Production Readiness](docs/PRODUCTION_READINESS.md)
+- [Milestones & Roadmap](docs/MILESTONES.md)
+- [Changelog](docs/CHANGELOG.md)
+- [Security](docs/SECURITY.md)
 
 ## License
 

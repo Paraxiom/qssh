@@ -6,10 +6,10 @@ This guide covers running QSSH (Quantum Secure Shell) in Docker containers for e
 
 ```bash
 # Build the Docker image
-./docker-build.sh
+./scripts/docker-build.sh
 
 # Run QSSH server
-./docker-run.sh
+./scripts/docker-run.sh
 
 # Or use docker-compose
 docker-compose up qsshd
@@ -28,16 +28,16 @@ docker-compose up qsshd
 
 ```bash
 # Standard build
-./docker-build.sh
+./scripts/docker-build.sh
 
 # No cache (clean build)
-./docker-build.sh --no-cache
+./scripts/docker-build.sh --no-cache
 
 # Multi-platform build
-./docker-build.sh --platform linux/amd64,linux/arm64
+./scripts/docker-build.sh --platform linux/amd64,linux/arm64
 
 # Custom tag
-./docker-build.sh --tag myregistry/qssh:v1.0
+./scripts/docker-build.sh --tag myregistry/qssh:v1.0
 ```
 
 ## Running Containers

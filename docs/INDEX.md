@@ -68,4 +68,4 @@ Start with:
 
 For security reviews, questions, or collaboration:
 - GitHub Issues: [QuantumVerseProtocols/qssh](https://github.com/QuantumVerseProtocols/qssh)
-- Security: See [SECURITY.md](../SECURITY.md)
+- Security: See [SECURITY.md](SECURITY.md)

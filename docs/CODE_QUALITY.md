@@ -48,4 +48,4 @@ cargo build --release --locked
 
 This is version 1.0.0 - external security audits are welcome and encouraged.
 
-For security issues, please see [SECURITY.md](../SECURITY.md)
+For security issues, please see [SECURITY.md](SECURITY.md)

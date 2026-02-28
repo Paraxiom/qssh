@@ -58,7 +58,7 @@ RUN mkdir -p /etc/qssh /var/log/qssh /home
 
 # Copy configuration and entrypoint
 COPY qsshd.config.production /etc/qssh/qsshd.conf
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Expose port
