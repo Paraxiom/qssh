@@ -348,6 +348,19 @@ pub async fn setup_x11_forwarding(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::SymmetricCrypto;
+
+    /// Create a test Transport from a loopback TCP connection.
+    /// The returned Transport is functional for send/receive over localhost.
+    async fn mock_transport() -> Arc<Transport> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = TcpStream::connect(addr).await.unwrap();
+        // Accept the server side (we don't need it, just need the client Transport)
+        let _server = listener.accept().await.unwrap();
+        let crypto = SymmetricCrypto::from_shared_secret(&[0u8; 32]).unwrap();
+        Arc::new(Transport::new(client, crypto))
+    }
 
     #[test]
     fn test_auth_cookie_generation() {
@@ -359,20 +372,70 @@ mod tests {
         assert_ne!(cookie1, cookie2); // Should be random
     }
 
-    // #[test]
-    // fn test_display_format() {
-    //     let config = X11Config {
-    //         display_number: 10,
-    //         screen: 0,
-    //         ..Default::default()
-    //     };
+    #[tokio::test]
+    async fn test_display_format() {
+        let transport = mock_transport().await;
+        let config = X11Config {
+            display_number: 10,
+            screen: 0,
+            ..Default::default()
+        };
+        let forwarder = X11Forwarder::with_config(transport, config);
+        assert_eq!(forwarder.get_display(), "localhost:10.0");
+    }
 
-    //     // TODO: Create proper mock Transport for testing
-    //     // let forwarder = X11Forwarder::with_config(
-    //     //     Arc::new(Transport::new()),
-    //     //     config
-    //     // );
+    #[tokio::test]
+    async fn test_display_format_custom() {
+        let transport = mock_transport().await;
+        let config = X11Config {
+            display_number: 42,
+            screen: 2,
+            ..Default::default()
+        };
+        let forwarder = X11Forwarder::with_config(transport, config);
+        assert_eq!(forwarder.get_display(), "localhost:42.2");
+    }
 
-    //     // assert_eq!(forwarder.get_display(), "localhost:10.0");
-    // }
+    #[tokio::test]
+    async fn test_auth_data() {
+        let transport = mock_transport().await;
+        let config = X11Config::default();
+        let cookie = config.auth_cookie.clone();
+        let forwarder = X11Forwarder::with_config(transport, config);
+        let (proto, data) = forwarder.get_auth_data();
+        assert_eq!(proto, "MIT-MAGIC-COOKIE-1");
+        assert_eq!(data, &cookie[..]);
+    }
+
+    #[tokio::test]
+    async fn test_start_stop() {
+        let transport = mock_transport().await;
+        // Use a high display number to avoid port conflicts
+        let config = X11Config {
+            display_number: 99,
+            ..Default::default()
+        };
+        let forwarder = X11Forwarder::with_config(transport, config);
+
+        // Start should succeed (binds to 127.0.0.1:6099)
+        forwarder.start().await.unwrap();
+
+        // Verify listener was created
+        assert!(!forwarder.listeners.read().await.is_empty());
+
+        // Stop should clean up
+        forwarder.stop().await.unwrap();
+        assert!(forwarder.listeners.read().await.is_empty());
+        assert!(forwarder.active_channels.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_handle_channel_data_no_channel() {
+        let transport = mock_transport().await;
+        let forwarder = X11Forwarder::with_config(transport, X11Config::default());
+
+        // Sending data to a non-existent channel should succeed silently
+        let result = forwarder.handle_channel_data(9999, vec![1, 2, 3]).await;
+        assert!(result.is_ok());
+    }
 }
