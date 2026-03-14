@@ -1,6 +1,10 @@
 services:
+  # ── qsshd server ────────────────────────────────────────────────
   qsshd:
-    build: .
+    build:
+      context: .
+      args:
+        FEATURES: "sftp,hybrid-kex"
     container_name: qsshd-server
     ports:
       - "0.0.0.0:22222:22222"
@@ -19,41 +23,79 @@ services:
       retries: 3
       start_period: 10s
     networks:
-      - qssh_network
+      qssh_network:
+        ipv4_address: 172.21.0.10
 
-  # Client example (for testing)
+  # ── qsshd hardened (T3+ only, quantum-native frames) ───────────
+  qsshd-hardened:
+    build:
+      context: .
+      args:
+        FEATURES: "sftp,quantum-native"
+    container_name: qsshd-hardened
+    ports:
+      - "0.0.0.0:22223:22222"
+    volumes:
+      - qssh_hardened_etc:/etc/qssh
+      - qssh_hardened_home:/home
+      - qssh_hardened_logs:/var/log/qssh
+    environment:
+      - QSSH_LOG_LEVEL=info
+    restart: unless-stopped
+    networks:
+      qssh_network:
+        ipv4_address: 172.21.0.11
+    profiles:
+      - hardened
+
+  # ── Client (for testing) ────────────────────────────────────────
   qssh-client:
     build: .
     container_name: qssh-client
     depends_on:
-      - qsshd
+      qsshd:
+        condition: service_healthy
     volumes:
       - qssh_client_keys:/home/qssh/.qssh
     environment:
-      - QSSH_LOG_LEVEL=info
+      - QSSH_LOG_LEVEL=debug
     networks:
       - qssh_network
     entrypoint: ["/bin/bash"]
-    command: ["-c", "sleep infinity"]  # Keep container running for manual testing
+    command: ["-c", "sleep infinity"]
     profiles:
-      - client  # Only start with --profile client
+      - client
 
-  # QKD simulator (optional, for quantum key distribution testing)
-  qkd-simulator:
-    image: alpine:latest
-    container_name: qkd-simulator
+  # ── PQTG (Post-Quantum Transport Gateway) ──────────────────────
+  # Provides QKD key delivery via ETSI GS QKD 014
+  pqtg:
+    image: paraxiom/coherence-shield:latest
+    container_name: pqtg-gateway
     ports:
       - "127.0.0.1:8443:8443"
-    command: >
-      sh -c "
-        echo 'QKD Simulator running on port 8443';
-        echo 'This simulates a quantum key distribution endpoint';
-        nc -l -p 8443
-      "
+    environment:
+      - PQTG_MODE=simulator
+      - PQTG_KEY_RATE=1000
     networks:
-      - qssh_network
+      qssh_network:
+        ipv4_address: 172.21.0.20
     profiles:
-      - qkd  # Only start with --profile qkd
+      - qkd
+
+  # ── Coherence Shield (AI attestation proxy) ─────────────────────
+  coherence-shield:
+    image: paraxiom/coherence-shield:latest
+    container_name: coherence-shield
+    ports:
+      - "127.0.0.1:3080:3080"
+    volumes:
+      - shield_keys:/root/.coherence-shield/keys
+      - shield_audit:/root/.coherence-shield
+    networks:
+      qssh_network:
+        ipv4_address: 172.21.0.30
+    profiles:
+      - shield
 
 networks:
   qssh_network:
@@ -64,10 +106,11 @@ networks:
 
 volumes:
   qssh_etc:
-    driver: local
   qssh_home:
-    driver: local
-  qssh_client_keys:
-    driver: local
   qssh_logs:
-    driver: local
+  qssh_client_keys:
+  qssh_hardened_etc:
+  qssh_hardened_home:
+  qssh_hardened_logs:
+  shield_keys:
+  shield_audit:
