@@ -89,7 +89,8 @@ impl HybridKeyPair {
 
         // Perform X25519 DH
         let x25519_static = StaticSecret::from(self.x25519_secret);
-        let client_public: [u8; 32] = client_x25519_public.try_into().unwrap();
+        let client_public: [u8; 32] = client_x25519_public.try_into()
+            .map_err(|_| QsshError::Crypto("X25519 public key conversion failed".into()))?;
         let client_public = PublicKey::from(client_public);
         let x25519_shared = x25519_static.diffie_hellman(&client_public);
 
@@ -152,7 +153,8 @@ impl HybridClientExchange {
 
         // Perform X25519 DH
         let x25519_static = StaticSecret::from(self.x25519_secret);
-        let server_public: [u8; 32] = server_x25519_public.try_into().unwrap();
+        let server_public: [u8; 32] = server_x25519_public.try_into()
+            .map_err(|_| QsshError::Crypto("X25519 public key conversion failed".into()))?;
         let server_public = PublicKey::from(server_public);
         let x25519_shared = x25519_static.diffie_hellman(&server_public);
 

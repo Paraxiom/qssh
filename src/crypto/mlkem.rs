@@ -92,7 +92,8 @@ impl MlKem768KeyPair {
         let dk = DecapsulationKey::<ml_kem::MlKem768Params>::from_bytes(&dk_array);
 
         // Parse the ciphertext
-        let ct_array: [u8; mlkem768::CT_SIZE] = ciphertext.try_into().unwrap();
+        let ct_array: [u8; mlkem768::CT_SIZE] = ciphertext.try_into()
+            .map_err(|_| QsshError::Crypto("Invalid ML-KEM-768 ciphertext size".into()))?;
         let ct = ml_kem::array::Array::from(ct_array);
 
         // Decapsulate
@@ -154,7 +155,8 @@ impl MlKem1024KeyPair {
         let dk = DecapsulationKey::<ml_kem::MlKem1024Params>::from_bytes(&dk_array);
 
         // Parse the ciphertext
-        let ct_array: [u8; mlkem1024::CT_SIZE] = ciphertext.try_into().unwrap();
+        let ct_array: [u8; mlkem1024::CT_SIZE] = ciphertext.try_into()
+            .map_err(|_| QsshError::Crypto("Invalid ML-KEM-1024 ciphertext size".into()))?;
         let ct = ml_kem::array::Array::from(ct_array);
 
         // Decapsulate

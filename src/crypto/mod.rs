@@ -255,7 +255,8 @@ impl PqKeyExchange {
             if *pos + 4 > data.len() {
                 return Err(QsshError::Crypto(format!("Truncated host key: missing {} length", name)));
             }
-            let len = u32::from_be_bytes(data[*pos..*pos+4].try_into().unwrap()) as usize;
+            let len = u32::from_be_bytes(data[*pos..*pos+4].try_into()
+                .map_err(|_| QsshError::Crypto(format!("Truncated host key: invalid {} length bytes", name)))?) as usize;
             *pos += 4;
             if *pos + len > data.len() {
                 return Err(QsshError::Crypto(format!("Truncated host key: missing {} data", name)));

@@ -164,21 +164,22 @@ impl FileAttributes {
         if self.permissions.is_some() { flags |= 0x00000004; }
         if self.atime.is_some() { flags |= 0x00000008; }
 
-        buf.write_u32::<BigEndian>(flags).unwrap();
+        // Vec<u8> writes are infallible — expect() documents this invariant
+        buf.write_u32::<BigEndian>(flags).expect("Vec write");
 
         if let Some(size) = self.size {
-            buf.write_u64::<BigEndian>(size).unwrap();
+            buf.write_u64::<BigEndian>(size).expect("Vec write");
         }
         if let Some(uid) = self.uid {
-            buf.write_u32::<BigEndian>(uid).unwrap();
-            buf.write_u32::<BigEndian>(self.gid.unwrap_or(0)).unwrap();
+            buf.write_u32::<BigEndian>(uid).expect("Vec write");
+            buf.write_u32::<BigEndian>(self.gid.unwrap_or(0)).expect("Vec write");
         }
         if let Some(perms) = self.permissions {
-            buf.write_u32::<BigEndian>(perms).unwrap();
+            buf.write_u32::<BigEndian>(perms).expect("Vec write");
         }
         if let Some(atime) = self.atime {
-            buf.write_u32::<BigEndian>(atime).unwrap();
-            buf.write_u32::<BigEndian>(self.mtime.unwrap_or(atime)).unwrap();
+            buf.write_u32::<BigEndian>(atime).expect("Vec write");
+            buf.write_u32::<BigEndian>(self.mtime.unwrap_or(atime)).expect("Vec write");
         }
 
         buf

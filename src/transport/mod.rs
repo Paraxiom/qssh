@@ -59,7 +59,8 @@ impl Transport {
             reader: Arc::new(Mutex::new(reader)),
             writer: Arc::new(Mutex::new(writer)),
             send_crypto: Arc::new(RwLock::new(crypto)),
-            recv_crypto: Arc::new(RwLock::new(SymmetricCrypto::from_shared_secret(&[0u8; 32]).unwrap())),
+            recv_crypto: Arc::new(RwLock::new(SymmetricCrypto::from_shared_secret(&[0u8; 32])
+                .expect("zero-key SymmetricCrypto init must not fail"))),
             send_sequence: Arc::new(Mutex::new(0)),
             recv_sequence: Arc::new(Mutex::new(0)),
             rekey_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),

@@ -246,7 +246,10 @@ impl ControlMaster {
     pub async fn check_master(socket_path: &PathBuf) -> bool {
         if let Ok(mut stream) = UnixStream::connect(socket_path).await {
             let msg = ControlMessage::Ping;
-            let msg_bytes = bincode::serialize(&msg).unwrap_or_default();
+            let msg_bytes = match bincode::serialize(&msg) {
+                Ok(b) => b,
+                Err(_) => return false,
+            };
 
             let len_bytes = (msg_bytes.len() as u32).to_be_bytes();
             if stream.write_all(&len_bytes).await.is_err() {

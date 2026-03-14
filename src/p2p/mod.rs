@@ -160,7 +160,9 @@ impl P2pSession {
         // Store connection
         self.connections.write().await.push(connection);
         
-        Ok(self.connections.read().await.last().unwrap().clone_ref())
+        Ok(self.connections.read().await.last()
+            .ok_or_else(|| QsshError::Connection("No connections available".into()))?
+            .clone_ref())
     }
     
     /// Handle incoming connection
