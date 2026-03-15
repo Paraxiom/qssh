@@ -3,7 +3,8 @@
 use serde::{Serialize, Deserialize};
 use crate::{PqAlgorithm, KexAlgorithm};
 
-/// QSSH protocol version
+/// The current supported version of the QSSH protocol
+/// Represented as a (Major, Minor) tuple (e.g., 0.1)
 pub const PROTOCOL_VERSION: (u8, u8) = (0, 1);
 
 /// Protocol messages
@@ -281,8 +282,11 @@ pub struct GlobalRequestSuccessMessage {
 
 /// Disconnect reason codes
 pub mod disconnect_reasons {
+    /// The peer sent a message that violates the protocol state machine
     pub const PROTOCOL_ERROR: u32 = 1;
+    /// The cryptographic handshake failed to verify.
     pub const KEY_EXCHANGE_FAILED: u32 = 2;
+    /// The user provided invalid credentials or an untrusted certificate
     pub const AUTHENTICATION_FAILED: u32 = 3;
     pub const CONNECTION_LOST: u32 = 4;
     pub const BY_APPLICATION: u32 = 5;
