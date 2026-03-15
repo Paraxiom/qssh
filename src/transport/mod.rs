@@ -1,21 +1,21 @@
 //! Quantum-secure transport layer
 
-use crate::{QsshError, Result, crypto::SymmetricCrypto};
 use crate::compression::{CompressionAlgorithm, CompressionContext};
-use tokio::net::TcpStream;
+use crate::{crypto::SymmetricCrypto, QsshError, Result};
+use bincode;
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use serde::{Serialize, Deserialize};
-use bincode;
-use std::sync::{Arc, RwLock};
+use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
-pub mod protocol;
 pub mod channel;
+pub mod protocol;
 pub mod quantum_resistant;
 
-pub use protocol::*;
 pub use channel::*;
+pub use protocol::*;
 pub use quantum_resistant::*;
 
 /// Unified transport trait for both classical and quantum-resistant transports
@@ -53,24 +53,34 @@ pub struct Transport {
 
 impl Transport {
     /// Create new transport from established TCP connection (unidirectional - for backwards compatibility)
-    pub fn new(stream: TcpStream, crypto: SymmetricCrypto) -> Self {
+    pub fn new(stream: TcpStream, crypto: SymmetricCrypto) -> Result<Self> {
         let (reader, writer) = stream.into_split();
-        Self {
+        let default_recv_crypto = SymmetricCrypto::from_shared_secret(&[0u8; 32])?;
+        Ok(Self {
             reader: Arc::new(Mutex::new(reader)),
             writer: Arc::new(Mutex::new(writer)),
             send_crypto: Arc::new(RwLock::new(crypto)),
-            recv_crypto: Arc::new(RwLock::new(SymmetricCrypto::from_shared_secret(&[0u8; 32])
-                .expect("zero-key SymmetricCrypto init must not fail"))),
+            recv_crypto: Arc::new(RwLock::new(default_recv_crypto)),
             send_sequence: Arc::new(Mutex::new(0)),
             recv_sequence: Arc::new(Mutex::new(0)),
             rekey_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            send_compression: Arc::new(Mutex::new(CompressionContext::new(CompressionAlgorithm::None, 6))),
-            recv_compression: Arc::new(Mutex::new(CompressionContext::new(CompressionAlgorithm::None, 6))),
-        }
+            send_compression: Arc::new(Mutex::new(CompressionContext::new(
+                CompressionAlgorithm::None,
+                6,
+            ))),
+            recv_compression: Arc::new(Mutex::new(CompressionContext::new(
+                CompressionAlgorithm::None,
+                6,
+            ))),
+        })
     }
 
     /// Create new transport with separate send and receive crypto
-    pub fn new_bidirectional(stream: TcpStream, send_crypto: SymmetricCrypto, recv_crypto: SymmetricCrypto) -> Self {
+    pub fn new_bidirectional(
+        stream: TcpStream,
+        send_crypto: SymmetricCrypto,
+        recv_crypto: SymmetricCrypto,
+    ) -> Self {
         let (reader, writer) = stream.into_split();
         Self {
             reader: Arc::new(Mutex::new(reader)),
@@ -80,11 +90,17 @@ impl Transport {
             send_sequence: Arc::new(Mutex::new(0)),
             recv_sequence: Arc::new(Mutex::new(0)),
             rekey_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            send_compression: Arc::new(Mutex::new(CompressionContext::new(CompressionAlgorithm::None, 6))),
-            recv_compression: Arc::new(Mutex::new(CompressionContext::new(CompressionAlgorithm::None, 6))),
+            send_compression: Arc::new(Mutex::new(CompressionContext::new(
+                CompressionAlgorithm::None,
+                6,
+            ))),
+            recv_compression: Arc::new(Mutex::new(CompressionContext::new(
+                CompressionAlgorithm::None,
+                6,
+            ))),
         }
     }
-    
+
     /// Send an encrypted message
     pub async fn send_message<T: Serialize>(&self, message: &T) -> Result<()> {
         log::trace!("Transport: sending message");
@@ -109,87 +125,88 @@ impl Transport {
             *seq_lock += 1;
             current
         };
-        
+
         // Add sequence number to prevent replay attacks
         let mut authenticated_data = Vec::new();
         authenticated_data.extend_from_slice(&seq.to_be_bytes());
         authenticated_data.extend_from_slice(&plaintext);
-        
+
         // Encrypt (read lock: non-blocking for concurrent recv)
         let (ciphertext, nonce) = {
-            let crypto = self.send_crypto.read()
+            let crypto = self
+                .send_crypto
+                .read()
                 .map_err(|_| QsshError::Crypto("Send crypto lock poisoned".into()))?;
             crypto.encrypt(&authenticated_data)?
         };
-        
+
         // Frame format: [4 bytes length][12 bytes nonce][ciphertext]
         let frame_length = (nonce.len() + ciphertext.len()) as u32;
         let mut frame = Vec::new();
         frame.extend_from_slice(&frame_length.to_be_bytes());
         frame.extend_from_slice(&nonce);
         frame.extend_from_slice(&ciphertext);
-        
+
         // Send
         let mut writer = self.writer.lock().await;
         log::trace!("Transport: writing {} bytes to stream", frame.len());
-        writer.write_all(&frame).await
-            .map_err(|e| {
-                log::error!("Transport: failed to write to stream: {}", e);
-                QsshError::Io(e)
-            })?;
-        writer.flush().await
-            .map_err(|e| {
-                log::error!("Transport: failed to flush stream: {}", e);
-                QsshError::Io(e)
-            })?;
+        writer.write_all(&frame).await.map_err(|e| {
+            log::error!("Transport: failed to write to stream: {}", e);
+            QsshError::Io(e)
+        })?;
+        writer.flush().await.map_err(|e| {
+            log::error!("Transport: failed to flush stream: {}", e);
+            QsshError::Io(e)
+        })?;
         log::trace!("Transport: message sent successfully");
-        
+
         Ok(())
     }
-    
+
     /// Receive and decrypt a message
     pub async fn receive_message<T: for<'de> Deserialize<'de>>(&self) -> Result<T> {
         let mut reader = self.reader.lock().await;
-        
+
         // Read frame length
         let mut length_bytes = [0u8; 4];
         log::trace!("Transport: attempting to read 4 bytes for frame length");
-        reader.read_exact(&mut length_bytes).await
-            .map_err(|e| {
-                log::error!("Transport: failed to read frame length: {}", e);
-                QsshError::Io(e)
-            })?;
+        reader.read_exact(&mut length_bytes).await.map_err(|e| {
+            log::error!("Transport: failed to read frame length: {}", e);
+            QsshError::Io(e)
+        })?;
         let frame_length = u32::from_be_bytes(length_bytes) as usize;
-        
+
         if frame_length > MAX_MESSAGE_SIZE {
             return Err(QsshError::Protocol("Frame too large".into()));
         }
-        
+
         // Read nonce and ciphertext
         let mut frame = vec![0u8; frame_length];
-        reader.read_exact(&mut frame).await
-            .map_err(QsshError::Io)?;
-        
+        reader.read_exact(&mut frame).await.map_err(QsshError::Io)?;
+
         let (nonce, ciphertext) = frame.split_at(12);
-        
+
         // Decrypt (read lock: non-blocking for concurrent send)
         let authenticated_data = {
-            let crypto = self.recv_crypto.read()
+            let crypto = self
+                .recv_crypto
+                .read()
                 .map_err(|_| QsshError::Crypto("Recv crypto lock poisoned".into()))?;
             crypto.decrypt(ciphertext, nonce)?
         };
-        
+
         // Verify sequence number
         if authenticated_data.len() < 8 {
             return Err(QsshError::Protocol("Invalid message format".into()));
         }
-        
+
         let (seq_bytes, plaintext) = authenticated_data.split_at(8);
         let received_seq = u64::from_be_bytes(
-            seq_bytes.try_into()
-                .map_err(|_| QsshError::Protocol("Invalid sequence number format".into()))?
+            seq_bytes
+                .try_into()
+                .map_err(|_| QsshError::Protocol("Invalid sequence number format".into()))?,
         );
-        
+
         // Check and update sequence number
         let expected_seq = {
             let mut seq_lock = self.recv_sequence.lock().await;
@@ -197,9 +214,12 @@ impl Transport {
             *seq_lock += 1;
             current
         };
-        
+
         if received_seq != expected_seq {
-            return Err(QsshError::Protocol(format!("Invalid sequence number: expected {}, got {}", expected_seq, received_seq)));
+            return Err(QsshError::Protocol(format!(
+                "Invalid sequence number: expected {}, got {}",
+                expected_seq, received_seq
+            )));
         }
 
         // Decompress before deserialization
@@ -211,10 +231,10 @@ impl Transport {
         // Deserialize
         let message = bincode::deserialize(&plaintext)
             .map_err(|e| QsshError::Protocol(format!("Deserialization failed: {}", e)))?;
-        
+
         Ok(message)
     }
-    
+
     /// Enable compression on this transport (called after handshake negotiation)
     pub async fn set_compression(&self, algorithm: CompressionAlgorithm, level: u32) {
         let mut send = self.send_compression.lock().await;
@@ -222,12 +242,21 @@ impl Transport {
         let mut recv = self.recv_compression.lock().await;
         *recv = CompressionContext::new(algorithm, level);
         if algorithm.is_enabled() {
-            log::info!("Transport compression enabled: {:?} (level {})", algorithm, level);
+            log::info!(
+                "Transport compression enabled: {:?} (level {})",
+                algorithm,
+                level
+            );
         }
     }
 
     /// Get compression statistics for sent data
-    pub async fn compression_stats(&self) -> (crate::compression::CompressionStats, crate::compression::CompressionStats) {
+    pub async fn compression_stats(
+        &self,
+    ) -> (
+        crate::compression::CompressionStats,
+        crate::compression::CompressionStats,
+    ) {
         let send = self.send_compression.lock().await;
         let recv = self.recv_compression.lock().await;
         (send.stats().clone(), recv.stats().clone())
@@ -235,7 +264,11 @@ impl Transport {
 
     /// Update encryption keys (rekey). Acquires write locks on both crypto instances
     /// and resets sequence numbers to prevent nonce reuse with new keys.
-    pub async fn update_keys(&self, new_send: SymmetricCrypto, new_recv: SymmetricCrypto) -> Result<()> {
+    pub async fn update_keys(
+        &self,
+        new_send: SymmetricCrypto,
+        new_recv: SymmetricCrypto,
+    ) -> Result<()> {
         // Acquire writer mutex to ensure no send is in flight
         let _writer_guard = self.writer.lock().await;
         // Acquire reader mutex to ensure no recv is in flight
@@ -243,12 +276,16 @@ impl Transport {
 
         // Swap crypto keys
         {
-            let mut send = self.send_crypto.write()
+            let mut send = self
+                .send_crypto
+                .write()
                 .map_err(|_| QsshError::Crypto("Send crypto lock poisoned during rekey".into()))?;
             *send = new_send;
         }
         {
-            let mut recv = self.recv_crypto.write()
+            let mut recv = self
+                .recv_crypto
+                .write()
                 .map_err(|_| QsshError::Crypto("Recv crypto lock poisoned during rekey".into()))?;
             *recv = new_recv;
         }
@@ -263,7 +300,10 @@ impl Transport {
             *seq = 0;
         }
 
-        let count = self.rekey_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let count = self
+            .rekey_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
         log::info!("Rekey #{} complete — new session keys active", count);
 
         Ok(())
@@ -277,8 +317,7 @@ impl Transport {
     /// Close the transport
     pub async fn close(&self) -> Result<()> {
         let mut writer = self.writer.lock().await;
-        writer.shutdown().await
-            .map_err(QsshError::Io)?;
+        writer.shutdown().await.map_err(QsshError::Io)?;
         Ok(())
     }
 }

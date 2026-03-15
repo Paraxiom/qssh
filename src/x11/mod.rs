@@ -359,7 +359,7 @@ mod tests {
         // Accept the server side (we don't need it, just need the client Transport)
         let _server = listener.accept().await.unwrap();
         let crypto = SymmetricCrypto::from_shared_secret(&[0u8; 32]).unwrap();
-        Arc::new(Transport::new(client, crypto))
+        Arc::new(Transport::new(client, crypto).unwrap())
     }
 
     #[test]
