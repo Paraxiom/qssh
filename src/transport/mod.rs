@@ -4,11 +4,13 @@ use crate::compression::{CompressionAlgorithm, CompressionContext};
 use crate::{crypto::SymmetricCrypto, QsshError, Result};
 use bincode;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 pub mod channel;
 pub mod protocol;
@@ -31,8 +33,184 @@ pub trait QsshTransport: Send + Sync {
     async fn close(&self) -> Result<()>;
 }
 
-/// Maximum message size (1MB)
-const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
+/// Maximum raw frame size (1MB) for unauthenticated inbound data.
+const MAX_RAW_MESSAGE_SIZE: usize = 1024 * 1024;
+
+/// Maximum serialized message size (1MB).
+const MAX_MESSAGE_SIZE: usize = MAX_RAW_MESSAGE_SIZE;
+
+/// In-memory transport used by unit tests.
+///
+/// This mock has no network side effects and can be shared across tasks.
+#[derive(Default)]
+pub struct MockTransport {
+    incoming: Mutex<VecDeque<u8>>,
+    outgoing: Mutex<VecDeque<u8>>,
+    closed: AtomicBool,
+    incoming_notify: Notify,
+}
+
+impl MockTransport {
+    /// Create an empty mock transport.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Inject a serialized frame into the incoming buffer.
+    pub async fn inject_frame(&self, frame: &[u8]) {
+        let mut incoming = self.incoming.lock().await;
+        incoming.extend(frame.iter().copied());
+        self.incoming_notify.notify_waiters();
+    }
+
+    /// Inject a typed message into the incoming buffer.
+    pub async fn inject_message<T: serde::Serialize>(&self, message: &T) -> Result<()> {
+        let payload = bincode::serialize(message)
+            .map_err(|e| QsshError::Protocol(format!("Serialization failed: {}", e)))?;
+        let frame = encode_frame(&payload)?;
+        self.inject_frame(&frame).await;
+        Ok(())
+    }
+
+    /// Serialize a raw payload into a framed message and queue it to outgoing.
+    pub async fn send_raw_message(&self, payload: &[u8]) -> std::result::Result<Vec<u8>, QsshError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(QsshError::Connection("Mock transport is closed".into()));
+        }
+
+        let frame = encode_frame(payload)?;
+        let mut outgoing = self.outgoing.lock().await;
+        outgoing.extend(frame.iter().copied());
+        Ok(frame)
+    }
+
+    /// Wait for and return the next fully framed incoming payload.
+    pub async fn receive_raw_message(&self) -> std::result::Result<Vec<u8>, QsshError> {
+        loop {
+            {
+                let mut incoming = self.incoming.lock().await;
+                if let Some(payload) = try_pop_frame(&mut incoming)? {
+                    return Ok(payload);
+                }
+            }
+
+            if self.closed.load(Ordering::Acquire) {
+                return Err(QsshError::Connection("Mock transport is closed".into()));
+            }
+
+            self.incoming_notify.notified().await;
+        }
+    }
+
+    /// Drain all raw bytes written by send_message.
+    pub async fn take_outgoing_bytes(&self) -> Vec<u8> {
+        let mut outgoing = self.outgoing.lock().await;
+        outgoing.drain(..).collect()
+    }
+
+    /// Pop and decode one sent message from the outgoing buffer, if present.
+    pub async fn take_outgoing_message<T: for<'de> serde::Deserialize<'de>>(
+        &self,
+    ) -> Result<Option<T>> {
+        let mut outgoing = self.outgoing.lock().await;
+        let Some(payload) = try_pop_frame(&mut outgoing)? else {
+            return Ok(None);
+        };
+
+        let message = bincode::deserialize(&payload)
+            .map_err(|e| QsshError::Protocol(format!("Deserialization failed: {}", e)))?;
+        Ok(Some(message))
+    }
+
+    /// Return the current number of queued incoming bytes.
+    pub async fn incoming_len(&self) -> usize {
+        self.incoming.lock().await.len()
+    }
+
+    /// Return the current number of queued outgoing bytes.
+    pub async fn outgoing_len(&self) -> usize {
+        self.outgoing.lock().await.len()
+    }
+}
+
+#[async_trait::async_trait]
+impl QsshTransport for MockTransport {
+    async fn send_message<T: serde::Serialize + Send + Sync>(&self, message: &T) -> Result<()> {
+        let payload = bincode::serialize(message)
+            .map_err(|e| QsshError::Protocol(format!("Serialization failed: {}", e)))?;
+        let _ = self.send_raw_message(&payload).await?;
+        Ok(())
+    }
+
+    async fn receive_message<T: for<'de> serde::Deserialize<'de>>(&self) -> Result<T> {
+        let payload = self.receive_raw_message().await?;
+        let message = bincode::deserialize(&payload)
+            .map_err(|e| QsshError::Protocol(format!("Deserialization failed: {}", e)))?;
+        Ok(message)
+    }
+
+    async fn close(&self) -> Result<()> {
+        self.closed.store(true, Ordering::Release);
+        self.incoming_notify.notify_waiters();
+        Ok(())
+    }
+}
+
+fn encode_frame(payload: &[u8]) -> Result<Vec<u8>> {
+    if payload.len() > MAX_RAW_MESSAGE_SIZE {
+        return Err(QsshError::Protocol("Message too large".into()));
+    }
+
+    let mut frame = Vec::with_capacity(4 + payload.len());
+    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    frame.extend_from_slice(payload);
+    Ok(frame)
+}
+
+fn try_pop_frame(buffer: &mut VecDeque<u8>) -> Result<Option<Vec<u8>>> {
+    if buffer.len() < 4 {
+        return Ok(None);
+    }
+
+    let len_bytes = [
+        *buffer.front()
+            .ok_or_else(|| QsshError::Protocol("Truncated frame: missing length byte 0".into()))?,
+        *buffer
+            .get(1)
+            .ok_or_else(|| QsshError::Protocol("Truncated frame: missing length byte 1".into()))?,
+        *buffer
+            .get(2)
+            .ok_or_else(|| QsshError::Protocol("Truncated frame: missing length byte 2".into()))?,
+        *buffer
+            .get(3)
+            .ok_or_else(|| QsshError::Protocol("Truncated frame: missing length byte 3".into()))?,
+    ];
+
+    let frame_len = u32::from_be_bytes(len_bytes) as usize;
+    if frame_len > MAX_RAW_MESSAGE_SIZE {
+        return Err(QsshError::Protocol("Frame too large".into()));
+    }
+
+    if buffer.len() < 4 + frame_len {
+        return Ok(None);
+    }
+
+    let mut payload = Vec::with_capacity(frame_len);
+    for i in 0..frame_len {
+        let byte = *buffer
+            .get(4 + i)
+            .ok_or_else(|| QsshError::Protocol("Truncated frame: missing payload byte".into()))?;
+        payload.push(byte);
+    }
+
+    for _ in 0..(4 + frame_len) {
+        let _ = buffer
+            .pop_front()
+            .ok_or_else(|| QsshError::Protocol("Truncated frame: buffer underflow".into()))?;
+    }
+
+    Ok(Some(payload))
+}
 
 /// Transport layer for encrypted communication
 #[derive(Clone)]
@@ -335,6 +513,57 @@ impl QsshTransport for Transport {
 
     async fn close(&self) -> Result<()> {
         self.close().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{timeout, Duration};
+
+    #[tokio::test]
+    async fn mock_transport_inject_and_receive_message() {
+        let transport = MockTransport::new();
+        let expected = Message::Ping(42);
+
+        transport.inject_message(&expected).await.unwrap();
+        let received: Message = transport.receive_message().await.unwrap();
+
+        match received {
+            Message::Ping(v) => assert_eq!(v, 42),
+            _ => panic!("unexpected message variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_transport_send_and_drain_outgoing_message() {
+        let transport = MockTransport::new();
+        let sent = Message::Pong(7);
+
+        transport.send_message(&sent).await.unwrap();
+        let drained: Option<Message> = transport.take_outgoing_message().await.unwrap();
+
+        match drained {
+            Some(Message::Pong(v)) => assert_eq!(v, 7),
+            _ => panic!("unexpected outgoing message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_transport_close_unblocks_receiver() {
+        let transport = Arc::new(MockTransport::new());
+        let receiver = transport.clone();
+
+        let wait_task = tokio::spawn(async move { receiver.receive_message::<Message>().await });
+
+        tokio::task::yield_now().await;
+        transport.close().await.unwrap();
+
+        let result = timeout(Duration::from_secs(1), wait_task).await;
+        assert!(result.is_ok(), "receiver task did not complete in time");
+
+        let join_result = result.unwrap().unwrap();
+        assert!(join_result.is_err(), "receiver should fail after close");
     }
 }
 
