@@ -437,7 +437,9 @@ impl<'a> ClientHandshake<'a> {
         Ok(())
     }
     
-    /// Maximum raw message size (1 MB) — prevents OOM DoS from attacker-controlled length field
+    /// Maximum allowed size for an unencrypted handshake message (1 MB).
+    /// This serves as a critical security limit to prevent Denial-of-Service (DoS) 
+    /// attacks via memory exhaustion (OOM) from unauthenticated peers.
     const MAX_RAW_MESSAGE_SIZE: usize = 1024 * 1024;
 
     /// Receive raw message (before encryption is established)
