@@ -1,27 +1,32 @@
 //! QSSH handshake implementation
 
-use fn_dsa::SigningKey as FnSigningKeyTrait;
-use crate::{
-    Result, QsshError, QsshConfig, PqAlgorithm, KexAlgorithm,
-    crypto::{PqKeyExchange, SymmetricCrypto, SessionKeyDerivation},
-    crypto::mlkem::{MlKem768KeyPair, MlKem1024KeyPair, mlkem768_encapsulate, mlkem1024_encapsulate, derive_session_material},
-    transport::{Transport, Message, ClientHelloMessage, ServerHelloMessage,
-                KeyExchangeMessage, AuthMessage, AuthMethod, PROTOCOL_VERSION},
-    auth::AuthorizedKeysManager,
-};
 #[cfg(feature = "hybrid-kex")]
-use crate::crypto::hybrid::{HybridKeyPair, HybridClientExchange};
+use crate::crypto::hybrid::{HybridClientExchange, HybridKeyPair};
 #[cfg(feature = "qkd")]
 use crate::qkd::QkdClient;
-use tokio::net::TcpStream;
+use crate::{
+    auth::AuthorizedKeysManager,
+    crypto::mlkem::{
+        derive_session_material, mlkem1024_encapsulate, mlkem768_encapsulate, MlKem1024KeyPair,
+        MlKem768KeyPair,
+    },
+    crypto::{PqKeyExchange, SessionKeyDerivation, SymmetricCrypto},
+    transport::{
+        AuthMessage, AuthMethod, ClientHelloMessage, KeyExchangeMessage, Message,
+        ServerHelloMessage, Transport, PROTOCOL_VERSION,
+    },
+    KexAlgorithm, PqAlgorithm, QsshConfig, QsshError, Result,
+};
+use fn_dsa::SigningKey as FnSigningKeyTrait;
 use rand::{thread_rng, RngCore};
+use tokio::net::TcpStream;
 
 /// Client-side handshake
 pub struct ClientHandshake<'a> {
     config: &'a QsshConfig,
     stream: TcpStream,
-    identity_key: Option<Vec<u8>>,  // Client's identity private key
-    identity_pubkey: Option<Vec<u8>>,  // Client's identity public key
+    identity_key: Option<Vec<u8>>,    // Client's identity private key
+    identity_pubkey: Option<Vec<u8>>, // Client's identity public key
     #[cfg(feature = "qkd")]
     qkd_client: Option<QkdClient>,
 }
@@ -29,10 +34,10 @@ pub struct ClientHandshake<'a> {
 impl<'a> ClientHandshake<'a> {
     pub fn new(config: &'a QsshConfig, stream: TcpStream) -> Self {
         log::debug!("Creating client handshake, QKD enabled: {}", config.use_qkd);
-        
+
         // Load identity key from ~/.qssh/id_qssh
         let (identity_key, identity_pubkey) = Self::load_identity_key();
-        
+
         #[cfg(feature = "qkd")]
         let qkd_client = if config.use_qkd {
             // Create QKD configuration from QSSH config
@@ -44,7 +49,7 @@ impl<'a> ClientHandshake<'a> {
                 cache_size: 10,
                 min_entropy: 0.9,
             };
-            
+
             let endpoint = match config.qkd_endpoint.clone() {
                 Some(ep) => ep,
                 None => {
@@ -57,7 +62,7 @@ impl<'a> ClientHandshake<'a> {
                 Ok(client) => {
                     log::info!("QKD client initialized successfully");
                     Some(client)
-                },
+                }
                 Err(e) => {
                     log::warn!("Failed to create QKD client: {}", e);
                     None
@@ -66,7 +71,7 @@ impl<'a> ClientHandshake<'a> {
         } else {
             None
         };
-        
+
         Self {
             config,
             stream,
@@ -76,16 +81,16 @@ impl<'a> ClientHandshake<'a> {
             qkd_client,
         }
     }
-    
+
     /// Load identity key from filesystem
     fn load_identity_key() -> (Option<Vec<u8>>, Option<Vec<u8>>) {
-        use std::path::PathBuf;
         use std::fs;
-        
+        use std::path::PathBuf;
+
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
         let key_path = PathBuf::from(home).join(".qssh/id_qssh");
         let pubkey_path = PathBuf::from(&key_path).with_extension("pub");
-        
+
         // Load private key
         let identity_key = match fs::read_to_string(&key_path) {
             Ok(data) => {
@@ -95,7 +100,7 @@ impl<'a> ClientHandshake<'a> {
                     let lines: Vec<&str> = data.lines().collect();
                     let mut base64_data = String::new();
                     let mut in_key = false;
-                    
+
                     for line in lines {
                         if line.contains("BEGIN QSSH PRIVATE KEY") {
                             in_key = true;
@@ -108,12 +113,16 @@ impl<'a> ClientHandshake<'a> {
                             base64_data.push_str(line.trim());
                         }
                     }
-                    
+
                     // Decode base64
                     use base64::Engine;
                     match base64::engine::general_purpose::STANDARD.decode(&base64_data) {
                         Ok(key_bytes) => {
-                            log::debug!("Loaded and decoded identity key from {:?} ({} bytes)", key_path, key_bytes.len());
+                            log::debug!(
+                                "Loaded and decoded identity key from {:?} ({} bytes)",
+                                key_path,
+                                key_bytes.len()
+                            );
                             Some(key_bytes)
                         }
                         Err(e) => {
@@ -132,7 +141,7 @@ impl<'a> ClientHandshake<'a> {
                 None
             }
         };
-        
+
         // Load public key
         let identity_pubkey = match fs::read_to_string(&pubkey_path) {
             Ok(data) => {
@@ -161,10 +170,10 @@ impl<'a> ClientHandshake<'a> {
                 None
             }
         };
-        
+
         (identity_key, identity_pubkey)
     }
-    
+
     /// Load user certificate from ~/.qssh/id_qssh-cert if it exists
     fn load_certificate(&self) -> Option<Vec<u8>> {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -172,7 +181,11 @@ impl<'a> ClientHandshake<'a> {
 
         match std::fs::read(&cert_path) {
             Ok(data) => {
-                log::debug!("Loaded certificate from {:?} ({} bytes)", cert_path, data.len());
+                log::debug!(
+                    "Loaded certificate from {:?} ({} bytes)",
+                    cert_path,
+                    data.len()
+                );
                 Some(data)
             }
             Err(_) => None,
@@ -199,7 +212,10 @@ impl<'a> ClientHandshake<'a> {
         }
 
         // Send client hello
-        log::debug!("Creating ClientHelloMessage with KEX preference: {:?}", self.config.kex_algorithm);
+        log::debug!(
+            "Creating ClientHelloMessage with KEX preference: {:?}",
+            self.config.kex_algorithm
+        );
         let client_hello = ClientHelloMessage {
             version: PROTOCOL_VERSION,
             random: client_random,
@@ -220,7 +236,7 @@ impl<'a> ClientHandshake<'a> {
             Message::ServerHello(msg) => {
                 log::debug!("Received ServerHello with KEX: {:?}", msg.selected_kex);
                 msg
-            },
+            }
             _ => return Err(QsshError::Protocol("Expected ServerHello".into())),
         };
 
@@ -232,22 +248,30 @@ impl<'a> ClientHandshake<'a> {
         // Perform key exchange based on selected algorithm
         let (shared_secret, key_exchange_msg, pq_kex) = match server_hello.selected_kex {
             KexAlgorithm::FalconSignedShares => {
-                self.perform_falcon_kex(&server_hello, &client_random).await?
+                self.perform_falcon_kex(&server_hello, &client_random)
+                    .await?
             }
             KexAlgorithm::MlKem768 => {
-                self.perform_mlkem768_kex(&server_hello, &client_random).await?
+                self.perform_mlkem768_kex(&server_hello, &client_random)
+                    .await?
             }
             KexAlgorithm::MlKem1024 => {
-                self.perform_mlkem1024_kex(&server_hello, &client_random).await?
+                self.perform_mlkem1024_kex(&server_hello, &client_random)
+                    .await?
             }
             #[cfg(feature = "hybrid-kex")]
             KexAlgorithm::HybridX25519MlKem768 => {
-                self.perform_hybrid_kex(&server_hello, &client_random).await?
+                self.perform_hybrid_kex(&server_hello, &client_random)
+                    .await?
             }
         };
 
         // Get QKD key if available
-        log::debug!("Checking QKD: enabled={}, endpoint={:?}", self.config.use_qkd, server_hello.qkd_endpoint);
+        log::debug!(
+            "Checking QKD: enabled={}, endpoint={:?}",
+            self.config.use_qkd,
+            server_hello.qkd_endpoint
+        );
         #[cfg(feature = "qkd")]
         let (qkd_key, qkd_proof) = if self.config.use_qkd && server_hello.qkd_endpoint.is_some() {
             if let Some(qkd_client) = &self.qkd_client {
@@ -284,9 +308,10 @@ impl<'a> ClientHandshake<'a> {
         key_exchange_msg.qkd_proof = qkd_proof;
 
         log::debug!("Sending KeyExchangeMessage");
-        self.send_raw(&Message::KeyExchange(key_exchange_msg)).await?;
+        self.send_raw(&Message::KeyExchange(key_exchange_msg))
+            .await?;
         log::debug!("KeyExchangeMessage sent");
-        
+
         // Derive session keys - combine PQC shared secret with QKD key if available
         log::debug!("Deriving session keys");
         #[cfg(feature = "qkd")]
@@ -302,49 +327,55 @@ impl<'a> ClientHandshake<'a> {
                 }
                 (combined, true)
             }
-            None => (shared_secret.clone(), false)
+            None => (shared_secret.clone(), false),
         };
 
         #[cfg(not(feature = "qkd"))]
         let final_secret = shared_secret.clone();
 
-        let session_keys = SessionKeyDerivation::derive_keys(
-            &final_secret,
-            &client_random,
-            &server_hello.random,
-        )?;
+        let session_keys =
+            SessionKeyDerivation::derive_keys(&final_secret, &client_random, &server_hello.random)?;
         #[cfg(feature = "qkd")]
         let security_type = if has_qkd { "PQC+QKD" } else { "PQC-only" };
         #[cfg(not(feature = "qkd"))]
         let security_type = "PQC-only";
         log::debug!("Session keys derived with {} security", security_type);
-        
+
         // Authenticate - compute session ID and load certificate before moving stream
         log::debug!("Computing session ID");
         let session_id = self.compute_session_id(&client_random, &server_hello.random);
         log::debug!("Session ID computed: {} bytes", session_id.len());
         let cert_data = self.load_certificate();
-        
+
         // Create transport with encryption - client uses client_write_key for sending, server_write_key for receiving
         log::debug!("Creating symmetric crypto");
         let send_crypto = SymmetricCrypto::from_shared_secret(&session_keys.client_write_key)?;
         let recv_crypto = SymmetricCrypto::from_shared_secret(&session_keys.server_write_key)?;
         log::debug!("Creating transport");
         let transport = Transport::new_bidirectional(self.stream, send_crypto, recv_crypto);
-        
+
         // Determine authentication method
         // Priority: 1. Certificate  2. Public key  3. Password  4. Ephemeral
         let auth_msg = if let Some(cert_data) = cert_data {
             // Use certificate-based authentication
-            log::info!("Using certificate authentication for user {}", self.config.username);
+            log::info!(
+                "Using certificate authentication for user {}",
+                self.config.username
+            );
 
             // Sign session ID with the identity key (certified key)
             let signature = if let Some(priv_key) = &self.identity_key {
-                let mut sk = fn_dsa::SigningKeyStandard::decode(priv_key)
-                    .ok_or_else(|| QsshError::Crypto("Invalid identity key for cert auth".into()))?;
+                let mut sk = fn_dsa::SigningKeyStandard::decode(priv_key).ok_or_else(|| {
+                    QsshError::Crypto("Invalid identity key for cert auth".into())
+                })?;
                 let mut sig = vec![0u8; fn_dsa::signature_size(fn_dsa::FN_DSA_LOGN_512)];
-                sk.sign(&mut aes_gcm::aead::OsRng, &fn_dsa::DOMAIN_NONE, &fn_dsa::HASH_ID_RAW,
-                         &session_id, &mut sig);
+                sk.sign(
+                    &mut aes_gcm::aead::OsRng,
+                    &fn_dsa::DOMAIN_NONE,
+                    &fn_dsa::HASH_ID_RAW,
+                    &session_id,
+                    &mut sig,
+                );
                 sig
             } else {
                 Vec::new()
@@ -358,8 +389,8 @@ impl<'a> ClientHandshake<'a> {
                 signature,
                 session_id: session_id.clone(),
             }
-        } else if let (Some(priv_key), Some(pub_key)) =
-            (&self.identity_key, &self.identity_pubkey) {
+        } else if let (Some(priv_key), Some(pub_key)) = (&self.identity_key, &self.identity_pubkey)
+        {
             // Use public key authentication
             log::info!("Using identity Falcon key for authentication");
 
@@ -367,8 +398,13 @@ impl<'a> ClientHandshake<'a> {
             let mut sk = fn_dsa::SigningKeyStandard::decode(priv_key)
                 .ok_or_else(|| QsshError::Crypto("Invalid identity key".into()))?;
             let mut signature = vec![0u8; fn_dsa::signature_size(fn_dsa::FN_DSA_LOGN_512)];
-            sk.sign(&mut aes_gcm::aead::OsRng, &fn_dsa::DOMAIN_NONE, &fn_dsa::HASH_ID_RAW,
-                     &session_id, &mut signature);
+            sk.sign(
+                &mut aes_gcm::aead::OsRng,
+                &fn_dsa::DOMAIN_NONE,
+                &fn_dsa::HASH_ID_RAW,
+                &session_id,
+                &mut signature,
+            );
 
             log::debug!("Session ID signed: {} bytes", signature.len());
 
@@ -383,7 +419,10 @@ impl<'a> ClientHandshake<'a> {
             }
         } else if let Some(password) = &self.config.password {
             // Use password authentication
-            log::info!("Using password authentication for user {}", self.config.username);
+            log::info!(
+                "Using password authentication for user {}",
+                self.config.username
+            );
 
             // Send password as plaintext (will be encrypted by transport layer)
             let password_bytes = password.as_bytes().to_vec();
@@ -413,9 +452,9 @@ impl<'a> ClientHandshake<'a> {
                 session_id: session_id.clone(),
             }
         };
-        
+
         transport.send_message(&Message::Auth(auth_msg)).await?;
-        
+
         // Wait for auth response
         match transport.receive_message::<Message>().await? {
             Message::Auth(_) => Ok(transport),
@@ -423,23 +462,21 @@ impl<'a> ClientHandshake<'a> {
             _ => Err(QsshError::Protocol("Authentication failed".into())),
         }
     }
-    
+
     /// Send raw message (before encryption is established)
     async fn send_raw(&mut self, msg: &Message) -> Result<()> {
         use tokio::io::AsyncWriteExt;
         let data = bincode::serialize(msg)
             .map_err(|e| QsshError::Protocol(format!("Serialization failed: {}", e)))?;
-        
+
         let len = (data.len() as u32).to_be_bytes();
         self.stream.write_all(&len).await?;
         self.stream.write_all(&data).await?;
         self.stream.flush().await?;
         Ok(())
     }
-    
-    /// Maximum allowed size for an unencrypted handshake message (1 MB).
-    /// This serves as a critical security limit to prevent Denial-of-Service (DoS) 
-    /// attacks via memory exhaustion (OOM) from unauthenticated peers.
+
+    /// Maximum raw message size (1 MB) — prevents OOM DoS from attacker-controlled length field
     const MAX_RAW_MESSAGE_SIZE: usize = 1024 * 1024;
 
     /// Receive raw message (before encryption is established)
@@ -452,7 +489,8 @@ impl<'a> ClientHandshake<'a> {
         if len > Self::MAX_RAW_MESSAGE_SIZE {
             return Err(QsshError::Protocol(format!(
                 "Raw message too large: {} bytes (max {})",
-                len, Self::MAX_RAW_MESSAGE_SIZE
+                len,
+                Self::MAX_RAW_MESSAGE_SIZE
             )));
         }
 
@@ -465,7 +503,7 @@ impl<'a> ClientHandshake<'a> {
     }
 
     fn compute_session_id(&self, client_random: &[u8], server_random: &[u8]) -> Vec<u8> {
-        use sha3::{Sha3_256, Digest};
+        use sha3::{Digest, Sha3_256};
         let mut hasher = Sha3_256::new();
         hasher.update(b"QSSH-SESSION-ID");
         hasher.update(client_random);
@@ -522,14 +560,19 @@ impl<'a> ClientHandshake<'a> {
     ) -> Result<(Vec<u8>, KeyExchangeMessage, PqKeyExchange)> {
         log::debug!("Performing ML-KEM-768 KEX");
 
-        let server_ek = server_hello.mlkem_encapsulation_key.as_ref()
-            .ok_or_else(|| QsshError::Protocol("Server did not provide ML-KEM encapsulation key".into()))?;
+        let server_ek = server_hello
+            .mlkem_encapsulation_key
+            .as_ref()
+            .ok_or_else(|| {
+                QsshError::Protocol("Server did not provide ML-KEM encapsulation key".into())
+            })?;
 
         // Encapsulate to get shared secret and ciphertext
         let (mlkem_shared, mlkem_ciphertext) = mlkem768_encapsulate(server_ek)?;
 
         // Derive session material
-        let shared_secret = derive_session_material(&mlkem_shared, client_random, &server_hello.random);
+        let shared_secret =
+            derive_session_material(&mlkem_shared, client_random, &server_hello.random);
 
         // Still create PqKeyExchange for authentication
         let pq_kex = PqKeyExchange::new()?;
@@ -556,14 +599,19 @@ impl<'a> ClientHandshake<'a> {
     ) -> Result<(Vec<u8>, KeyExchangeMessage, PqKeyExchange)> {
         log::debug!("Performing ML-KEM-1024 KEX");
 
-        let server_ek = server_hello.mlkem_encapsulation_key.as_ref()
-            .ok_or_else(|| QsshError::Protocol("Server did not provide ML-KEM encapsulation key".into()))?;
+        let server_ek = server_hello
+            .mlkem_encapsulation_key
+            .as_ref()
+            .ok_or_else(|| {
+                QsshError::Protocol("Server did not provide ML-KEM encapsulation key".into())
+            })?;
 
         // Encapsulate to get shared secret and ciphertext
         let (mlkem_shared, mlkem_ciphertext) = mlkem1024_encapsulate(server_ek)?;
 
         // Derive session material
-        let shared_secret = derive_session_material(&mlkem_shared, client_random, &server_hello.random);
+        let shared_secret =
+            derive_session_material(&mlkem_shared, client_random, &server_hello.random);
 
         // Still create PqKeyExchange for authentication
         let pq_kex = PqKeyExchange::new()?;
@@ -591,17 +639,24 @@ impl<'a> ClientHandshake<'a> {
     ) -> Result<(Vec<u8>, KeyExchangeMessage, PqKeyExchange)> {
         log::debug!("Performing hybrid X25519 + ML-KEM-768 KEX");
 
-        let server_x25519_pk = server_hello.x25519_public_key.as_ref()
-            .ok_or_else(|| QsshError::Protocol("Server did not provide X25519 public key".into()))?;
-        let server_mlkem_ek = server_hello.mlkem_encapsulation_key.as_ref()
-            .ok_or_else(|| QsshError::Protocol("Server did not provide ML-KEM encapsulation key".into()))?;
+        let server_x25519_pk = server_hello.x25519_public_key.as_ref().ok_or_else(|| {
+            QsshError::Protocol("Server did not provide X25519 public key".into())
+        })?;
+        let server_mlkem_ek = server_hello
+            .mlkem_encapsulation_key
+            .as_ref()
+            .ok_or_else(|| {
+                QsshError::Protocol("Server did not provide ML-KEM encapsulation key".into())
+            })?;
 
         // Perform hybrid key exchange
         let client_exchange = HybridClientExchange::new();
-        let (hybrid_shared, mlkem_ciphertext) = client_exchange.complete(server_x25519_pk, server_mlkem_ek)?;
+        let (hybrid_shared, mlkem_ciphertext) =
+            client_exchange.complete(server_x25519_pk, server_mlkem_ek)?;
 
         // Derive session material
-        let shared_secret = derive_session_material(&hybrid_shared, client_random, &server_hello.random);
+        let shared_secret =
+            derive_session_material(&hybrid_shared, client_random, &server_hello.random);
 
         // Still create PqKeyExchange for authentication
         let pq_kex = PqKeyExchange::new()?;
@@ -648,13 +703,13 @@ impl ServerHandshake {
             qkd_endpoint: None,
         }
     }
-    
+
     /// Set QKD endpoint for server
     pub fn with_qkd_endpoint(mut self, endpoint: Option<String>) -> Self {
         self.qkd_endpoint = endpoint;
         self
     }
-    
+
     /// Perform server handshake
     pub async fn perform(mut self) -> Result<(Transport, String)> {
         // Receive client hello
@@ -663,7 +718,10 @@ impl ServerHandshake {
             _ => return Err(QsshError::Protocol("Expected ClientHello".into())),
         };
 
-        log::debug!("Client supports KEX algorithms: {:?}", client_hello.kex_algorithms);
+        log::debug!(
+            "Client supports KEX algorithms: {:?}",
+            client_hello.kex_algorithms
+        );
 
         // Select KEX algorithm (prefer client's first choice if we support it)
         let selected_kex = self.select_kex_algorithm(&client_hello.kex_algorithms)?;
@@ -677,11 +735,8 @@ impl ServerHandshake {
         let server_kex = PqKeyExchange::new()?;
 
         // Build server hello based on selected KEX algorithm
-        let (server_hello, kex_state) = self.build_server_hello(
-            selected_kex,
-            server_random,
-            &server_kex,
-        )?;
+        let (server_hello, kex_state) =
+            self.build_server_hello(selected_kex, server_random, &server_kex)?;
 
         self.send_raw(&Message::ServerHello(server_hello)).await?;
 
@@ -707,15 +762,15 @@ impl ServerHandshake {
             &client_hello.random,
             &server_random,
         )?;
-        
+
         // Compute session ID before moving stream
         let session_id = self.compute_session_id(&client_hello.random, &server_random);
-        
+
         // Create transport with encryption - server uses server_write_key for sending, client_write_key for receiving
         let send_crypto = SymmetricCrypto::from_shared_secret(&session_keys.server_write_key)?;
         let recv_crypto = SymmetricCrypto::from_shared_secret(&session_keys.client_write_key)?;
         let transport = Transport::new_bidirectional(self.stream, send_crypto, recv_crypto);
-        
+
         // Receive authentication
         let auth_msg = match transport.receive_message::<Message>().await? {
             Message::Auth(msg) => msg,
@@ -723,18 +778,31 @@ impl ServerHandshake {
         };
         // Verify authentication
         let authorized = match &auth_msg.auth_method {
-            AuthMethod::PublicKey { algorithm: _, public_key } => {
+            AuthMethod::PublicKey {
+                algorithm: _,
+                public_key,
+            } => {
                 // Verify signature (expecting Falcon512 as we use it for signing)
-                let sig_valid = server_kex.verify_falcon(&session_id, &auth_msg.signature, public_key)?;
+                let sig_valid =
+                    server_kex.verify_falcon(&session_id, &auth_msg.signature, public_key)?;
 
                 if !sig_valid {
-                    log::warn!("Signature verification failed for user {}", auth_msg.username);
+                    log::warn!(
+                        "Signature verification failed for user {}",
+                        auth_msg.username
+                    );
                     false
                 } else if let Some(auth_mgr) = &self.auth_manager {
                     // Check authorized_keys
-                    match auth_mgr.verify_public_key(&auth_msg.username, PqAlgorithm::Falcon512, public_key).await {
+                    match auth_mgr
+                        .verify_public_key(&auth_msg.username, PqAlgorithm::Falcon512, public_key)
+                        .await
+                    {
                         Ok(Some(_)) => {
-                            log::info!("User {} authenticated successfully with public key", auth_msg.username);
+                            log::info!(
+                                "User {} authenticated successfully with public key",
+                                auth_msg.username
+                            );
                             true
                         }
                         Ok(None) => {
@@ -756,7 +824,9 @@ impl ServerHandshake {
                 if let Some(password_mgr) = &self.password_manager {
                     // password_hash is the plaintext password (encrypted in transit)
                     let mut password = String::from_utf8_lossy(password_hash).into_owned();
-                    let result = password_mgr.verify_password(&auth_msg.username, &password).await;
+                    let result = password_mgr
+                        .verify_password(&auth_msg.username, &password)
+                        .await;
                     // Zeroize password from memory immediately after verification
                     {
                         use zeroize::Zeroize;
@@ -764,7 +834,10 @@ impl ServerHandshake {
                     }
                     match result {
                         Ok(true) => {
-                            log::info!("User {} authenticated successfully with password", auth_msg.username);
+                            log::info!(
+                                "User {} authenticated successfully with password",
+                                auth_msg.username
+                            );
                             true
                         }
                         Ok(false) => {
@@ -782,7 +855,7 @@ impl ServerHandshake {
                 }
             }
             AuthMethod::Certificate { certificate_data } => {
-                use crate::certificate::{SshCertificate, CertificateValidator, ValidationResult};
+                use crate::certificate::{CertificateValidator, SshCertificate, ValidationResult};
 
                 // Deserialize the certificate
                 match bincode::deserialize::<SshCertificate>(certificate_data) {
@@ -798,24 +871,36 @@ impl ServerHandshake {
                                 if validator.check_principal(&cert, &auth_msg.username) {
                                     // Verify the session signature with the certified public key
                                     let sig_valid = server_kex.verify_falcon(
-                                        &session_id, &auth_msg.signature, &cert.public_key.key_data,
-                                    ).unwrap_or(false);
+                                        &session_id,
+                                        &auth_msg.signature,
+                                        &cert.public_key.key_data,
+                                    )?;
 
                                     if sig_valid {
-                                        log::info!("User {} authenticated with certificate (key_id: {})",
-                                            auth_msg.username, cert.key_id);
+                                        log::info!(
+                                            "User {} authenticated with certificate (key_id: {})",
+                                            auth_msg.username,
+                                            cert.key_id
+                                        );
                                         true
                                     } else {
                                         log::warn!("Certificate auth: signature verification failed for {}", auth_msg.username);
                                         false
                                     }
                                 } else {
-                                    log::warn!("Certificate principal mismatch for user {}", auth_msg.username);
+                                    log::warn!(
+                                        "Certificate principal mismatch for user {}",
+                                        auth_msg.username
+                                    );
                                     false
                                 }
                             }
                             Ok(result) => {
-                                log::warn!("Certificate validation failed for {}: {:?}", auth_msg.username, result);
+                                log::warn!(
+                                    "Certificate validation failed for {}: {:?}",
+                                    auth_msg.username,
+                                    result
+                                );
                                 false
                             }
                             Err(e) => {
@@ -831,7 +916,7 @@ impl ServerHandshake {
                 }
             }
         };
-        
+
         if !authorized {
             let disconnect = Message::Disconnect(crate::transport::protocol::DisconnectMessage {
                 reason_code: crate::transport::protocol::disconnect_reasons::AUTHENTICATION_FAILED,
@@ -840,26 +925,28 @@ impl ServerHandshake {
             transport.send_message(&disconnect).await?;
             return Err(QsshError::Protocol("Authentication failed".into()));
         }
-        
+
         // Send auth success
-        transport.send_message(&Message::Auth(auth_msg.clone())).await?;
-        
+        transport
+            .send_message(&Message::Auth(auth_msg.clone()))
+            .await?;
+
         Ok((transport, auth_msg.username))
     }
-    
+
     /// Send raw message (before encryption is established)
     async fn send_raw(&mut self, msg: &Message) -> Result<()> {
         use tokio::io::AsyncWriteExt;
         let data = bincode::serialize(msg)
             .map_err(|e| QsshError::Protocol(format!("Serialization failed: {}", e)))?;
-        
+
         let len = (data.len() as u32).to_be_bytes();
         self.stream.write_all(&len).await?;
         self.stream.write_all(&data).await?;
         self.stream.flush().await?;
         Ok(())
     }
-    
+
     /// Maximum raw message size (1 MB) — prevents OOM DoS from attacker-controlled length field
     const MAX_RAW_MESSAGE_SIZE: usize = 1024 * 1024;
 
@@ -873,7 +960,8 @@ impl ServerHandshake {
         if len > Self::MAX_RAW_MESSAGE_SIZE {
             return Err(QsshError::Protocol(format!(
                 "Raw message too large: {} bytes (max {})",
-                len, Self::MAX_RAW_MESSAGE_SIZE
+                len,
+                Self::MAX_RAW_MESSAGE_SIZE
             )));
         }
 
@@ -886,7 +974,7 @@ impl ServerHandshake {
     }
 
     fn compute_session_id(&self, client_random: &[u8], server_random: &[u8]) -> Vec<u8> {
-        use sha3::{Sha3_256, Digest};
+        use sha3::{Digest, Sha3_256};
         let mut hasher = Sha3_256::new();
         hasher.update(b"QSSH-SESSION-ID");
         hasher.update(client_random);
@@ -962,7 +1050,12 @@ impl ServerHandshake {
                     extensions: vec![],
                 };
 
-                Ok((hello, ServerKexState::MlKem768 { keypair: mlkem_keypair }))
+                Ok((
+                    hello,
+                    ServerKexState::MlKem768 {
+                        keypair: mlkem_keypair,
+                    },
+                ))
             }
             KexAlgorithm::MlKem1024 => {
                 let mlkem_keypair = MlKem1024KeyPair::generate()?;
@@ -982,7 +1075,12 @@ impl ServerHandshake {
                     extensions: vec![],
                 };
 
-                Ok((hello, ServerKexState::MlKem1024 { keypair: mlkem_keypair }))
+                Ok((
+                    hello,
+                    ServerKexState::MlKem1024 {
+                        keypair: mlkem_keypair,
+                    },
+                ))
             }
             #[cfg(feature = "hybrid-kex")]
             KexAlgorithm::HybridX25519MlKem768 => {
@@ -997,13 +1095,20 @@ impl ServerHandshake {
                     falcon_public_key: server_pq_kex.falcon_pk.clone(),
                     key_share: Vec::new(),
                     key_share_signature: Vec::new(),
-                    mlkem_encapsulation_key: Some(hybrid_keypair.mlkem_encapsulation_key().to_vec()),
+                    mlkem_encapsulation_key: Some(
+                        hybrid_keypair.mlkem_encapsulation_key().to_vec(),
+                    ),
                     x25519_public_key: Some(hybrid_keypair.x25519_public_key().to_vec()),
                     qkd_endpoint: self.qkd_endpoint.clone(),
                     extensions: vec![],
                 };
 
-                Ok((hello, ServerKexState::Hybrid { keypair: hybrid_keypair }))
+                Ok((
+                    hello,
+                    ServerKexState::Hybrid {
+                        keypair: hybrid_keypair,
+                    },
+                ))
             }
         }
     }
@@ -1036,28 +1141,45 @@ impl ServerHandshake {
                 ))
             }
             (KexAlgorithm::MlKem768, ServerKexState::MlKem768 { keypair }) => {
-                let ciphertext = key_exchange.mlkem_ciphertext.as_ref()
-                    .ok_or_else(|| QsshError::Protocol("Client did not provide ML-KEM ciphertext".into()))?;
+                let ciphertext = key_exchange.mlkem_ciphertext.as_ref().ok_or_else(|| {
+                    QsshError::Protocol("Client did not provide ML-KEM ciphertext".into())
+                })?;
 
                 let mlkem_shared = keypair.decapsulate(ciphertext)?;
-                Ok(derive_session_material(&mlkem_shared, client_random, server_random))
+                Ok(derive_session_material(
+                    &mlkem_shared,
+                    client_random,
+                    server_random,
+                ))
             }
             (KexAlgorithm::MlKem1024, ServerKexState::MlKem1024 { keypair }) => {
-                let ciphertext = key_exchange.mlkem_ciphertext.as_ref()
-                    .ok_or_else(|| QsshError::Protocol("Client did not provide ML-KEM ciphertext".into()))?;
+                let ciphertext = key_exchange.mlkem_ciphertext.as_ref().ok_or_else(|| {
+                    QsshError::Protocol("Client did not provide ML-KEM ciphertext".into())
+                })?;
 
                 let mlkem_shared = keypair.decapsulate(ciphertext)?;
-                Ok(derive_session_material(&mlkem_shared, client_random, server_random))
+                Ok(derive_session_material(
+                    &mlkem_shared,
+                    client_random,
+                    server_random,
+                ))
             }
             #[cfg(feature = "hybrid-kex")]
             (KexAlgorithm::HybridX25519MlKem768, ServerKexState::Hybrid { keypair }) => {
-                let client_x25519_pk = key_exchange.x25519_public_key.as_ref()
-                    .ok_or_else(|| QsshError::Protocol("Client did not provide X25519 public key".into()))?;
-                let ciphertext = key_exchange.mlkem_ciphertext.as_ref()
-                    .ok_or_else(|| QsshError::Protocol("Client did not provide ML-KEM ciphertext".into()))?;
+                let client_x25519_pk =
+                    key_exchange.x25519_public_key.as_ref().ok_or_else(|| {
+                        QsshError::Protocol("Client did not provide X25519 public key".into())
+                    })?;
+                let ciphertext = key_exchange.mlkem_ciphertext.as_ref().ok_or_else(|| {
+                    QsshError::Protocol("Client did not provide ML-KEM ciphertext".into())
+                })?;
 
                 let hybrid_shared = keypair.process_response(client_x25519_pk, ciphertext)?;
-                Ok(derive_session_material(&hybrid_shared, client_random, server_random))
+                Ok(derive_session_material(
+                    &hybrid_shared,
+                    client_random,
+                    server_random,
+                ))
             }
             _ => Err(QsshError::Protocol("KEX algorithm mismatch".into())),
         }
@@ -1066,11 +1188,19 @@ impl ServerHandshake {
 
 /// Server-side KEX state during handshake
 enum ServerKexState {
-    FalconShares { server_share: Vec<u8> },
-    MlKem768 { keypair: MlKem768KeyPair },
-    MlKem1024 { keypair: MlKem1024KeyPair },
+    FalconShares {
+        server_share: Vec<u8>,
+    },
+    MlKem768 {
+        keypair: MlKem768KeyPair,
+    },
+    MlKem1024 {
+        keypair: MlKem1024KeyPair,
+    },
     #[cfg(feature = "hybrid-kex")]
-    Hybrid { keypair: HybridKeyPair },
+    Hybrid {
+        keypair: HybridKeyPair,
+    },
 }
 
 /// Kani bounded model checking harnesses for handshake protocol.

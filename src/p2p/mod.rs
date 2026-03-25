@@ -214,7 +214,7 @@ impl P2pSession {
         
         // Create transport
         let crypto = SymmetricCrypto::from_shared_secret(&shared_secret)?;
-        let transport = Transport::new(stream, crypto);
+        let transport = Transport::new(stream, crypto)?;
         
         Ok((transport, peer_info))
     }
@@ -246,7 +246,7 @@ impl P2pSession {
         
         // Create transport
         let crypto = SymmetricCrypto::from_shared_secret(&shared_secret)?;
-        let transport = Transport::new(stream, crypto);
+        let transport = Transport::new(stream, crypto)?;
         
         Ok((transport, peer_info))
     }

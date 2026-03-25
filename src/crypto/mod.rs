@@ -2,35 +2,37 @@
 //! Pure-Rust implementations — no C FFI.
 
 use crate::{QsshError, Result};
-use fn_dsa::{FN_DSA_LOGN_512, sign_key_size, vrfy_key_size, signature_size,
-             DOMAIN_NONE, HASH_ID_RAW,
-             KeyPairGenerator as _, SigningKey as FnSigningKeyTrait, VerifyingKey as FnVerifyingKeyTrait};
-use slh_dsa::Sha2_128s;
-use signature::{Signer, Verifier, Keypair as SignatureKeypair};
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Nonce,
 };
+use fn_dsa::{
+    sign_key_size, signature_size, vrfy_key_size, KeyPairGenerator as _,
+    SigningKey as FnSigningKeyTrait, VerifyingKey as FnVerifyingKeyTrait, DOMAIN_NONE,
+    FN_DSA_LOGN_512, HASH_ID_RAW,
+};
 use rand::RngCore;
+use signature::{Keypair as SignatureKeypair, Signer, Verifier};
+use slh_dsa::Sha2_128s;
 
-pub mod kdf;
-pub mod quantum_cipher;
 pub mod cipher_choice;
-pub mod qrng_integration;
-pub mod quantum_kem;  // PROPER quantum KEM (not broken signature-only!)
-pub mod mlkem;
 #[cfg(feature = "hybrid-kex")]
 pub mod hybrid;
+pub mod kdf;
+pub mod mlkem;
+pub mod qrng_integration;
+pub mod quantum_cipher;
+pub mod quantum_kem; // PROPER quantum KEM (not broken signature-only!)
 #[cfg(test)]
 pub mod test_helpers;
 
-pub use kdf::{SessionKeyDerivation, SessionKeys};
-pub use quantum_cipher::QuantumCipher;
 pub use cipher_choice::{CipherAlgorithm, UniversalCipher};
-pub use qrng_integration::{QuantumRng, QrngConfig};
-pub use mlkem::{MlKem768KeyPair, MlKem1024KeyPair, mlkem768_encapsulate, mlkem1024_encapsulate};
 #[cfg(feature = "hybrid-kex")]
-pub use hybrid::{HybridKeyPair, HybridClientExchange, combine_secrets};
+pub use hybrid::{combine_secrets, HybridClientExchange, HybridKeyPair};
+pub use kdf::{SessionKeyDerivation, SessionKeys};
+pub use mlkem::{mlkem1024_encapsulate, mlkem768_encapsulate, MlKem1024KeyPair, MlKem768KeyPair};
+pub use qrng_integration::{QrngConfig, QuantumRng};
+pub use quantum_cipher::QuantumCipher;
 
 /// Post-quantum signature using SLH-DSA (SPHINCS+)
 pub struct PqSignature {
@@ -76,8 +78,8 @@ impl PqKeyExchange {
     /// Generate new post-quantum keys
     pub fn new() -> Result<Self> {
         // Check for QRNG availability
-        let qrng_available = std::env::var("QSSH_QRNG_ENDPOINT").is_ok() ||
-                            std::env::var("QSSH_KIRQ_ENDPOINT").is_ok();
+        let qrng_available = std::env::var("QSSH_QRNG_ENDPOINT").is_ok()
+            || std::env::var("QSSH_KIRQ_ENDPOINT").is_ok();
 
         if qrng_available {
             log::info!("QRNG endpoint detected - keys will use quantum entropy");
@@ -90,8 +92,12 @@ impl PqKeyExchange {
         // Generate FN-DSA (Falcon-512) keypair
         let mut falcon_sk_buf = vec![0u8; sign_key_size(FN_DSA_LOGN_512)];
         let mut falcon_pk_buf = vec![0u8; vrfy_key_size(FN_DSA_LOGN_512)];
-        fn_dsa::KeyPairGeneratorStandard::default()
-            .keygen(FN_DSA_LOGN_512, &mut OsRng, &mut falcon_sk_buf, &mut falcon_pk_buf);
+        fn_dsa::KeyPairGeneratorStandard::default().keygen(
+            FN_DSA_LOGN_512,
+            &mut OsRng,
+            &mut falcon_sk_buf,
+            &mut falcon_pk_buf,
+        );
 
         Ok(Self {
             sphincs_sk: sphincs_signing.to_bytes().to_vec(),
@@ -116,7 +122,13 @@ impl PqKeyExchange {
         let mut sk = fn_dsa::SigningKeyStandard::decode(&self.falcon_sk)
             .ok_or_else(|| QsshError::Crypto("Invalid Falcon secret key".into()))?;
         let mut sig = vec![0u8; signature_size(FN_DSA_LOGN_512)];
-        sk.sign(&mut OsRng, &DOMAIN_NONE, &HASH_ID_RAW, &ephemeral_secret, &mut sig);
+        sk.sign(
+            &mut OsRng,
+            &DOMAIN_NONE,
+            &HASH_ID_RAW,
+            &ephemeral_secret,
+            &mut sig,
+        );
 
         Ok((ephemeral_secret, sig))
     }
@@ -136,7 +148,10 @@ impl PqKeyExchange {
         }
 
         let vk = fn_dsa::VerifyingKeyStandard::decode(peer_falcon_pk).ok_or_else(|| {
-            log::error!("Failed to parse Falcon public key of size {}", peer_falcon_pk.len());
+            log::error!(
+                "Failed to parse Falcon public key of size {}",
+                peer_falcon_pk.len()
+            );
             QsshError::Crypto("Invalid Falcon public key".into())
         })?;
 
@@ -157,7 +172,7 @@ impl PqKeyExchange {
         client_random: &[u8],
         server_random: &[u8],
     ) -> Vec<u8> {
-        use sha3::{Sha3_256, Digest};
+        use sha3::{Digest, Sha3_256};
 
         let mut hasher = Sha3_256::new();
         hasher.update(b"QSSH-FALCON-v2");
@@ -213,7 +228,12 @@ impl PqKeyExchange {
     }
 
     /// Verify a FN-DSA (Falcon) detached signature
-    pub fn verify_falcon(&self, message: &[u8], signature: &[u8], public_key: &[u8]) -> Result<bool> {
+    pub fn verify_falcon(
+        &self,
+        message: &[u8],
+        signature: &[u8],
+        public_key: &[u8],
+    ) -> Result<bool> {
         let vk = fn_dsa::VerifyingKeyStandard::decode(public_key)
             .ok_or_else(|| QsshError::Crypto("Invalid Falcon public key".into()))?;
         Ok(vk.verify(signature, &DOMAIN_NONE, &HASH_ID_RAW, message))
@@ -225,8 +245,8 @@ impl PqKeyExchange {
     ///          [falcon_sk_len(4)][falcon_sk][falcon_pk_len(4)][falcon_pk]`
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
-        buf.extend_from_slice(b"QSSH");           // magic
-        buf.push(1u8);                              // version
+        buf.extend_from_slice(b"QSSH"); // magic
+        buf.push(1u8); // version
         buf.extend_from_slice(&(self.sphincs_sk.len() as u32).to_be_bytes());
         buf.extend_from_slice(&self.sphincs_sk);
         buf.extend_from_slice(&(self.sphincs_pk.len() as u32).to_be_bytes());
@@ -240,28 +260,40 @@ impl PqKeyExchange {
 
     /// Deserialize keys from bytes (for host key loading).
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        if data.len() < 5 {
-            return Err(QsshError::Crypto("Host key file too short".into()));
-        }
-        if &data[0..4] != b"QSSH" {
+        let magic = data
+            .get(0..4)
+            .ok_or_else(|| QsshError::Crypto("Host key file too short".into()))?;
+        if magic != b"QSSH" {
             return Err(QsshError::Crypto("Invalid host key file magic".into()));
         }
-        if data[4] != 1 {
-            return Err(QsshError::Crypto(format!("Unsupported host key version: {}", data[4])));
+        let version = *data
+            .get(4)
+            .ok_or_else(|| QsshError::Crypto("Host key file too short".into()))?;
+        if version != 1 {
+            return Err(QsshError::Crypto(format!(
+                "Unsupported host key version: {}",
+                version
+            )));
         }
 
         let mut pos = 5;
         let read_field = |pos: &mut usize, name: &str| -> Result<Vec<u8>> {
-            if *pos + 4 > data.len() {
-                return Err(QsshError::Crypto(format!("Truncated host key: missing {} length", name)));
-            }
-            let len = u32::from_be_bytes(data[*pos..*pos+4].try_into()
-                .map_err(|_| QsshError::Crypto(format!("Truncated host key: invalid {} length bytes", name)))?) as usize;
+            let len_bytes: [u8; 4] = data
+                .get(*pos..(*pos + 4))
+                .ok_or_else(|| {
+                    QsshError::Crypto(format!("Truncated host key: missing {} length", name))
+                })?
+                .try_into()
+                .map_err(|_| QsshError::Crypto(format!("Failed to parse {} length", name)))?;
+            let len = u32::from_be_bytes(len_bytes) as usize;
             *pos += 4;
-            if *pos + len > data.len() {
-                return Err(QsshError::Crypto(format!("Truncated host key: missing {} data", name)));
-            }
-            let field = data[*pos..*pos+len].to_vec();
+
+            let field = data
+                .get(*pos..(*pos + len))
+                .ok_or_else(|| {
+                    QsshError::Crypto(format!("Truncated host key: missing {} data", name))
+                })?
+                .to_vec();
             *pos += len;
             Ok(field)
         };
@@ -277,7 +309,12 @@ impl PqKeyExchange {
         fn_dsa::VerifyingKeyStandard::decode(&falcon_pk)
             .ok_or_else(|| QsshError::Crypto("Invalid Falcon public key".into()))?;
 
-        Ok(Self { sphincs_sk, sphincs_pk, falcon_sk, falcon_pk })
+        Ok(Self {
+            sphincs_sk,
+            sphincs_pk,
+            falcon_sk,
+            falcon_pk,
+        })
     }
 }
 
@@ -289,33 +326,41 @@ pub struct SymmetricCrypto {
 impl SymmetricCrypto {
     /// Create from shared secret
     pub fn from_shared_secret(shared_secret: &[u8]) -> Result<Self> {
-        if shared_secret.len() < 32 {
-            return Err(QsshError::Crypto("Shared secret too short".into()));
-        }
-        
-        let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&shared_secret[..32]);
+        let key_bytes = shared_secret
+            .get(0..32)
+            .ok_or_else(|| QsshError::Crypto("Shared secret too short".into()))?;
+        let key = aes_gcm::Key::<Aes256Gcm>::from_slice(key_bytes);
         let cipher = Aes256Gcm::new(key);
-        
+
         Ok(Self { cipher })
     }
-    
+
     /// Encrypt data
     pub fn encrypt(&self, plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-        let ciphertext = self.cipher
+        let ciphertext = self
+            .cipher
             .encrypt(&nonce, plaintext)
             .map_err(|e| QsshError::Crypto(format!("Encryption failed: {}", e)))?;
-        
+
         Ok((ciphertext, nonce.to_vec()))
     }
-    
+
     /// Decrypt data
     pub fn decrypt(&self, ciphertext: &[u8], nonce: &[u8]) -> Result<Vec<u8>> {
+        if nonce.len() != 12 {
+            return Err(QsshError::Crypto(format!(
+                "Invalid nonce size: got {}, expected 12",
+                nonce.len()
+            )));
+        }
+
         let nonce = Nonce::from_slice(nonce);
-        let plaintext = self.cipher
+        let plaintext = self
+            .cipher
             .decrypt(nonce, ciphertext)
             .map_err(|e| QsshError::Crypto(format!("Decryption failed: {}", e)))?;
-        
+
         Ok(plaintext)
     }
 }
@@ -323,7 +368,7 @@ impl SymmetricCrypto {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     /// FN-DSA (Falcon) key agreement test — pure Rust, works on all platforms.
     #[test]
     fn test_falcon_key_agreement() {
@@ -334,40 +379,28 @@ mod tests {
         let (alice_share, alice_sig) = alice.create_key_share().unwrap();
 
         // Bob verifies and creates his share
-        let verified_alice_share = bob.process_key_share(
-            &alice.falcon_pk,
-            &alice_share,
-            &alice_sig
-        ).unwrap();
+        let verified_alice_share = bob
+            .process_key_share(&alice.falcon_pk, &alice_share, &alice_sig)
+            .unwrap();
         assert_eq!(alice_share, verified_alice_share);
 
         let (bob_share, bob_sig) = bob.create_key_share().unwrap();
 
         // Alice verifies Bob's share
-        let verified_bob_share = alice.process_key_share(
-            &bob.falcon_pk,
-            &bob_share,
-            &bob_sig
-        ).unwrap();
+        let verified_bob_share = alice
+            .process_key_share(&bob.falcon_pk, &bob_share, &bob_sig)
+            .unwrap();
         assert_eq!(bob_share, verified_bob_share);
 
         // Both compute shared secret
         let client_random = vec![0x11; 32];
         let server_random = vec![0x22; 32];
 
-        let alice_secret = alice.compute_shared_secret(
-            &alice_share,
-            &bob_share,
-            &client_random,
-            &server_random
-        );
+        let alice_secret =
+            alice.compute_shared_secret(&alice_share, &bob_share, &client_random, &server_random);
 
-        let bob_secret = bob.compute_shared_secret(
-            &bob_share,
-            &alice_share,
-            &client_random,
-            &server_random
-        );
+        let bob_secret =
+            bob.compute_shared_secret(&bob_share, &alice_share, &client_random, &server_random);
 
         assert_eq!(alice_secret, bob_secret);
     }
@@ -379,15 +412,19 @@ mod tests {
         let message = b"Test message for Falcon";
 
         let signature = signer.sign_falcon(message).unwrap();
-        let valid = signer.verify_falcon(message, &signature, &signer.falcon_pk).unwrap();
+        let valid = signer
+            .verify_falcon(message, &signature, &signer.falcon_pk)
+            .unwrap();
         assert!(valid);
 
         // Wrong message should fail
         let wrong_message = b"Wrong message";
-        let invalid = signer.verify_falcon(wrong_message, &signature, &signer.falcon_pk).unwrap();
+        let invalid = signer
+            .verify_falcon(wrong_message, &signature, &signer.falcon_pk)
+            .unwrap();
         assert!(!invalid);
     }
-    
+
     #[test]
     fn test_symmetric_crypto() {
         let secret = vec![0x42; 32];
@@ -396,7 +433,9 @@ mod tests {
         let plaintext = b"Hello, quantum world!";
         let (ciphertext, nonce) = crypto.encrypt(plaintext).expect("Failed to encrypt");
 
-        let decrypted = crypto.decrypt(&ciphertext, &nonce).expect("Failed to decrypt");
+        let decrypted = crypto
+            .decrypt(&ciphertext, &nonce)
+            .expect("Failed to decrypt");
 
         assert_eq!(plaintext, &decrypted[..]);
     }
@@ -405,7 +444,10 @@ mod tests {
     #[test]
     fn test_keygen_all_platforms() {
         let kex = PqKeyExchange::new();
-        assert!(kex.is_ok(), "PqKeyExchange::new() should succeed on all platforms");
+        assert!(
+            kex.is_ok(),
+            "PqKeyExchange::new() should succeed on all platforms"
+        );
         let kex = kex.unwrap();
         assert_eq!(kex.falcon_pk.len(), vrfy_key_size(FN_DSA_LOGN_512));
         assert_eq!(kex.falcon_sk.len(), sign_key_size(FN_DSA_LOGN_512));
@@ -415,7 +457,10 @@ mod tests {
     fn test_symmetric_crypto_short_secret_rejected() {
         let short_secret = vec![0x42; 16]; // 16 bytes, need 32
         let result = SymmetricCrypto::from_shared_secret(&short_secret);
-        assert!(result.is_err(), "Shared secret shorter than 32 bytes should be rejected");
+        assert!(
+            result.is_err(),
+            "Shared secret shorter than 32 bytes should be rejected"
+        );
     }
 
     #[test]
