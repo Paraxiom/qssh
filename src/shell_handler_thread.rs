@@ -99,7 +99,7 @@ impl ShellSessionThread {
                 }
                 
                 // Make the slave PTY our controlling terminal
-                if libc::ioctl(slave_fd, libc::TIOCSCTTY.into(), 0) == -1 {
+                if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
                 
