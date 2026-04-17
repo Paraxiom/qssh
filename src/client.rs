@@ -47,6 +47,18 @@ impl ReconnectConfig {
     }
 }
 
+/// Events from the exec reader task, delivered via mpsc channel.
+/// Separates transport reading from exec logic to avoid the
+/// message-stealing race with port forwarding channels.
+enum ExecEvent {
+    Accepted,
+    Data(Vec<u8>),
+    ExitStatus(u32),
+    Eof,
+    Close,
+    Error(String),
+}
+
 /// QSSH client
 pub struct QsshClient {
     config: QsshConfig,
@@ -442,10 +454,14 @@ impl QsshClient {
     /// Execute a command and return (output, exit_code).
     /// Exit code is 0 on success, or the remote process exit code.
     /// Returns 255 if the server didn't send an exit status.
+    ///
+    /// Uses a dedicated reader task to avoid message-stealing race with
+    /// port forwarding channels. The reader task dispatches forwarding
+    /// messages to the router while feeding exec-channel events through
+    /// an mpsc channel.
     pub async fn exec_with_status(&self, command: &str) -> Result<(String, u32)> {
         let transport = self.transport.as_ref()
             .ok_or_else(|| QsshError::Protocol("Not connected".into()))?;
-        let router = self.forwarded_channel_router.clone();
 
         // Open exec channel
         let channel_id = self.channel_manager.open_channel(ChannelType::Session).await?;
@@ -459,33 +475,108 @@ impl QsshClient {
 
         transport.send_message(&open_msg).await?;
 
-        // Wait for channel accept
-        let start = std::time::Instant::now();
-        loop {
-            if start.elapsed() > std::time::Duration::from_secs(5) {
-                return Err(QsshError::Protocol("Timeout waiting for channel accept".into()));
-            }
+        // Spawn a dedicated reader task that owns the transport reader lock.
+        // This eliminates the race where exec_with_status and run_forward_loop
+        // compete for the same receive_message() Mutex.
+        let (exec_tx, mut exec_rx) = tokio::sync::mpsc::channel::<ExecEvent>(64);
+        let transport_reader = transport.clone();
+        let router = self.forwarded_channel_router.clone();
+        let registry = self.remote_forward_registry.clone();
 
-            match transport.receive_message::<Message>().await {
-                Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch_id, .. })) if ch_id == channel_id => {
-                    break;
+        let reader_handle = tokio::spawn(async move {
+            loop {
+                match transport_reader.receive_message::<Message>().await {
+                    // Exec channel events → send to exec_rx
+                    Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch_id, .. })) if ch_id == channel_id => {
+                        let _ = exec_tx.send(ExecEvent::Accepted).await;
+                    }
+                    Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data })) if ch_id == channel_id => {
+                        let _ = exec_tx.send(ExecEvent::Data(data)).await;
+                    }
+                    Ok(Message::Channel(ChannelMessage::ExitStatus { channel_id: ch_id, exit_code: code })) if ch_id == channel_id => {
+                        let _ = exec_tx.send(ExecEvent::ExitStatus(code)).await;
+                    }
+                    Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id })) if ch_id == channel_id => {
+                        let _ = exec_tx.send(ExecEvent::Eof).await;
+                    }
+                    Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) if ch_id == channel_id => {
+                        let _ = exec_tx.send(ExecEvent::Close).await;
+                    }
+
+                    // Forwarded channel open → spawn handler (no message stealing)
+                    Ok(Message::Channel(ChannelMessage::Open {
+                        channel_id: ch_id,
+                        channel_type: ChannelType::ForwardedTcpip {
+                            connected_host, connected_port, ..
+                        },
+                        ..
+                    })) => {
+                        log::info!("Forwarded channel {} open for {}:{} (during exec)",
+                            ch_id, connected_host, connected_port);
+                        let t = transport_reader.clone();
+                        let reg = registry.clone();
+                        let rtr = router.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_forwarded_channel(
+                                ch_id, connected_host, connected_port,
+                                Arc::new(t), reg, rtr,
+                            ).await {
+                                log::error!("Forwarded channel {} error: {}", ch_id, e);
+                            }
+                        });
+                    }
+
+                    // Other channel messages → route to forwarded channel handlers
+                    Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch_id, .. })) => {
+                        router.route_data(ch_id, Vec::new()).await;
+                    }
+                    Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data })) => {
+                        router.route_data(ch_id, data).await;
+                    }
+                    Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id })) => {
+                        router.remove(ch_id).await;
+                    }
+                    Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) => {
+                        router.remove(ch_id).await;
+                    }
+
+                    Ok(Message::Disconnect(_)) => {
+                        let _ = exec_tx.send(ExecEvent::Error("Server disconnected".into())).await;
+                        break;
+                    }
+                    Ok(_) => {} // Ignore other messages (keepalive, rekey acks, etc.)
+                    Err(e) => {
+                        let _ = exec_tx.send(ExecEvent::Error(format!("{}", e))).await;
+                        break;
+                    }
                 }
-                // Route Accept for forwarded channels
-                Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch_id, .. })) => {
-                    router.route_data(ch_id, Vec::new()).await;
+            }
+        });
+
+        // Wait for channel accept via the mpsc channel (no direct transport read)
+        let accept_timeout = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            async {
+                while let Some(event) = exec_rx.recv().await {
+                    match event {
+                        ExecEvent::Accepted => return Ok(()),
+                        ExecEvent::Error(e) => return Err(QsshError::Protocol(e)),
+                        _ => {} // Ignore data that arrives before accept
+                    }
                 }
-                // Route Data for forwarded channels
-                Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data })) => {
-                    router.route_data(ch_id, data).await;
-                }
-                Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id })) => {
-                    router.remove(ch_id).await;
-                }
-                Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) => {
-                    router.remove(ch_id).await;
-                }
-                Ok(_) => {}
-                Err(e) => return Err(e),
+                Err(QsshError::Protocol("Reader task exited before accept".into()))
+            },
+        ).await;
+
+        match accept_timeout {
+            Ok(Ok(())) => {} // Channel accepted
+            Ok(Err(e)) => {
+                reader_handle.abort();
+                return Err(e);
+            }
+            Err(_) => {
+                reader_handle.abort();
+                return Err(QsshError::Protocol("Timeout waiting for channel accept".into()));
             }
         }
 
@@ -497,47 +588,34 @@ impl QsshClient {
 
         transport.send_message(&exec_msg).await?;
 
-        // Collect output
+        // Collect output from the mpsc channel (reader task handles all routing)
         let mut output = Vec::new();
-        let mut exit_code: u32 = 255; // default if server doesn't send ExitStatus
-        let timeout = std::time::Duration::from_secs(30);
-        let start = std::time::Instant::now();
+        let mut exit_code: u32 = 255;
 
-        loop {
-            if start.elapsed() > timeout {
-                break;
-            }
+        let collect_timeout = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            async {
+                while let Some(event) = exec_rx.recv().await {
+                    match event {
+                        ExecEvent::Data(data) => output.extend_from_slice(&data),
+                        ExecEvent::ExitStatus(code) => exit_code = code,
+                        ExecEvent::Eof | ExecEvent::Close => break,
+                        ExecEvent::Error(e) => {
+                            log::warn!("Exec reader error: {}", e);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            },
+        ).await;
 
-            match transport.receive_message::<Message>().await {
-                Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data })) if ch_id == channel_id => {
-                    output.extend_from_slice(&data);
-                }
-                Ok(Message::Channel(ChannelMessage::ExitStatus { channel_id: ch_id, exit_code: code })) if ch_id == channel_id => {
-                    exit_code = code;
-                }
-                Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id })) if ch_id == channel_id => {
-                    break;
-                }
-                Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) if ch_id == channel_id => {
-                    break;
-                }
-                // Route messages for forwarded channels
-                Ok(Message::Channel(ChannelMessage::Accept { channel_id: ch_id, .. })) => {
-                    router.route_data(ch_id, Vec::new()).await;
-                }
-                Ok(Message::Channel(ChannelMessage::Data { channel_id: ch_id, data })) => {
-                    router.route_data(ch_id, data).await;
-                }
-                Ok(Message::Channel(ChannelMessage::Eof { channel_id: ch_id })) => {
-                    router.remove(ch_id).await;
-                }
-                Ok(Message::Channel(ChannelMessage::Close { channel_id: ch_id })) => {
-                    router.remove(ch_id).await;
-                }
-                Ok(_) => {}
-                Err(_) => break,
-            }
+        if collect_timeout.is_err() {
+            log::warn!("Exec command timed out after 30s");
         }
+
+        // Stop the reader task — run_forward_loop will start its own reader
+        reader_handle.abort();
 
         // Close channel
         let close_msg = Message::Channel(ChannelMessage::Close { channel_id });
