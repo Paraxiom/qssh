@@ -84,6 +84,12 @@ termios = "0.3"
 libc = "0.2"
 atty = "0.2"
 
+# Socket-level TCP keepalive (issue #1). Lets the kernel detect a silently
+# half-open forward tunnel within ~60 s instead of waiting for the 2 h Linux
+# default, so `receive_message().await` errors out and the outer reconnect
+# loop in `qssh-node` can actually run.
+socket2 = { version = "0.5", features = ["all"] }
+
 # Utilities
 hostname = "0.4"
 if-addrs = "0.12"

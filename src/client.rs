@@ -12,6 +12,40 @@ use crate::{
 use tokio::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
+use socket2::{Socket, TcpKeepalive};
+
+/// TCP keepalive parameters applied to every forward-tunnel socket.
+///
+/// Default Linux `tcp_keepalive_time` is 7200 s; without `SO_KEEPALIVE`
+/// the kernel doesn't even probe. With these values the kernel detects a
+/// silently half-open path within ≈60 s and surfaces the error to
+/// `receive_message().await`, which lets `qssh-node`'s outer reconnect
+/// loop actually run (issue #1).
+const KEEPALIVE_IDLE_SECS: u64 = 30;
+const KEEPALIVE_INTERVAL_SECS: u64 = 10;
+const KEEPALIVE_RETRIES: u32 = 3;
+
+/// Configure TCP keepalive on a freshly-connected tokio `TcpStream`.
+///
+/// Round-trips through `socket2` because tokio's `TcpStream` doesn't
+/// expose `set_tcp_keepalive` directly. Returns the same socket as a
+/// tokio stream — the conversion preserves the connection.
+fn apply_tcp_keepalive(stream: TcpStream) -> Result<TcpStream> {
+    let std_stream = stream.into_std()
+        .map_err(|e| QsshError::Connection(format!("into_std failed: {}", e)))?;
+    std_stream.set_nonblocking(true)
+        .map_err(|e| QsshError::Connection(format!("set_nonblocking failed: {}", e)))?;
+    let sock = Socket::from(std_stream);
+    let ka = TcpKeepalive::new()
+        .with_time(Duration::from_secs(KEEPALIVE_IDLE_SECS))
+        .with_interval(Duration::from_secs(KEEPALIVE_INTERVAL_SECS))
+        .with_retries(KEEPALIVE_RETRIES);
+    sock.set_tcp_keepalive(&ka)
+        .map_err(|e| QsshError::Connection(format!("set_tcp_keepalive failed: {}", e)))?;
+    let std_stream: std::net::TcpStream = sock.into();
+    TcpStream::from_std(std_stream)
+        .map_err(|e| QsshError::Connection(format!("from_std failed: {}", e)))
+}
 
 /// Configuration for automatic reconnection with exponential backoff
 #[derive(Debug, Clone)]
@@ -185,6 +219,14 @@ impl QsshClient {
         // Connect TCP
         let stream = TcpStream::connect(&addr).await
             .map_err(|e| QsshError::Connection(format!("Failed to connect to {}: {}", addr, e)))?;
+
+        // Enable TCP keepalive so kernel detects half-open paths (issue #1).
+        // Failure here is non-fatal — log and continue with kernel defaults.
+        let stream = match apply_tcp_keepalive(stream) {
+            Ok(s) => { log::debug!("TCP keepalive enabled ({}s idle / {}s interval / {} retries)",
+                KEEPALIVE_IDLE_SECS, KEEPALIVE_INTERVAL_SECS, KEEPALIVE_RETRIES); s }
+            Err(e) => return Err(e),
+        };
 
         log::info!("Connected to {}", addr);
 
