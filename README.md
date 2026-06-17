@@ -51,6 +51,37 @@ qssh is part of the Paraxiom post-quantum infrastructure stack:
 
 Total: **909+ theorems** across 10 systems. All Lean 4, all zero sorries.
 
+## Install
+
+### Debian / Ubuntu (APT)
+
+```bash
+curl -fsSL https://apt.paraxiom.org/paraxiom.gpg | sudo tee /usr/share/keyrings/paraxiom.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/paraxiom.gpg] https://apt.paraxiom.org stable main" \
+  | sudo tee /etc/apt/sources.list.d/paraxiom.list
+sudo apt-get update
+sudo apt-get install qssh
+```
+
+This installs the `qssh` client, the `qsshd` daemon and the supporting tools,
+plus a systemd service for `qsshd`:
+
+```bash
+sudoedit /etc/qssh/qsshd.env     # set listen address / port
+sudo systemctl start qsshd       # generates a Falcon-512 host key on first start
+```
+
+### Standalone `.deb`
+
+Download the `.deb` from [Releases](https://github.com/Paraxiom/qssh/releases) and:
+
+```bash
+sudo apt install ./qssh_*.deb
+```
+
+Building the package yourself and the APT-repo setup are documented in
+[docs/PACKAGING.md](docs/PACKAGING.md) and [docs/APT-REPO.md](docs/APT-REPO.md).
+
 ## Releases
 
 Pre-built binaries are available under [Releases](https://github.com/Paraxiom/qssh/releases).

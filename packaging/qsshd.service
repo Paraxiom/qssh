@@ -1,0 +1,28 @@
+[Unit]
+Description=QSSH - Post-Quantum Secure Shell Daemon
+Documentation=https://github.com/Paraxiom/qssh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/qssh/qsshd.env
+
+# Generate a Falcon-512 host key on first start if one does not exist yet
+# (mirrors how OpenSSH generates host keys on install).
+ExecStartPre=/bin/sh -c 'test -f /etc/qssh/host_key || /usr/bin/qssh-keygen -t falcon512 -f /etc/qssh/host_key'
+
+ExecStart=/usr/bin/qsshd --listen ${QSSHD_LISTEN} --host-key /etc/qssh/host_key --authorized-keys /etc/qssh/authorized_keys $QSSHD_OPTS
+
+Restart=on-failure
+RestartSec=5s
+
+# Modest hardening. An SSH server must spawn login sessions, so we intentionally
+# do NOT set NoNewPrivileges / ProtectHome / DynamicUser (would break shells).
+ProtectSystem=full
+ProtectControlGroups=true
+RestrictRealtime=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
