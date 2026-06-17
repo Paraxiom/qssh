@@ -2,7 +2,18 @@
 IMAGE := paraxiom/qssh
 TAG   := latest
 
-.PHONY: build build-hardened run stop test-connect compose-up compose-down keygen clean
+.PHONY: build build-hardened run stop test-connect compose-up compose-down keygen clean deb deb-cross
+
+# Default cross target for `make deb-cross`
+TARGET ?= x86_64-unknown-linux-gnu
+
+## Build a Debian .deb (Linux host only; needs: cargo install cargo-deb)
+deb:
+	cargo deb
+
+## Cross-build the .deb for $(TARGET) (e.g. make deb-cross TARGET=aarch64-unknown-linux-gnu)
+deb-cross:
+	cargo deb --target $(TARGET)
 
 ## Build standard image
 build:

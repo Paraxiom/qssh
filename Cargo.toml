@@ -149,3 +149,47 @@ hybrid-kex = ["x25519-dalek"] # X25519+ML-KEM hybrid key exchange
 
 [[example]]
 name = "quantum_harmony_validator"
+
+# ----------------------------------------------------------------------------
+# Debian package (.deb) — built with cargo-deb (`cargo install cargo-deb`).
+# Build on a Linux host (or a Linux cross target): `cargo deb`.
+# See docs/PACKAGING.md for details.
+# ----------------------------------------------------------------------------
+[package.metadata.deb]
+maintainer = "Paraxiom <sylvain@paraxiom.org>"
+copyright = "2026, Paraxiom. Dual-licensed MIT OR Apache-2.0."
+license-file = ["LICENSE-MIT", "0"]
+section = "net"
+priority = "optional"
+depends = "$auto"
+extended-description = """
+QSSH is a post-quantum secure shell: an SSH-style client/server suite using
+NIST PQC algorithms (Falcon / FN-DSA, SPHINCS+ / SLH-DSA, ML-KEM) with
+configurable security tiers and a quantum-resistant protocol design.
+
+This package installs the qsshd daemon, the qssh client and the supporting
+tools (qscp, qssh-keygen, qssh-passwd, qssh-agent, qssh-sign, qssh-add,
+qssh-node), plus a systemd service for qsshd.
+"""
+assets = [
+    ["target/release/qssh",        "usr/bin/", "755"],
+    ["target/release/qsshd",       "usr/bin/", "755"],
+    ["target/release/qscp",        "usr/bin/", "755"],
+    ["target/release/qssh-keygen", "usr/bin/", "755"],
+    ["target/release/qssh-passwd", "usr/bin/", "755"],
+    ["target/release/qssh-agent",  "usr/bin/", "755"],
+    ["target/release/qssh-sign",   "usr/bin/", "755"],
+    ["target/release/qssh-add",    "usr/bin/", "755"],
+    ["target/release/qssh-node",   "usr/bin/", "755"],
+    ["qsshd.config.production",    "etc/qssh/qsshd.config", "644"],
+    ["packaging/qsshd.env",        "etc/qssh/qsshd.env",    "644"],
+    ["README.md",                  "usr/share/doc/qssh/README.md",   "644"],
+    ["docs/PACKAGING.md",          "usr/share/doc/qssh/PACKAGING.md", "644"],
+]
+conf-files = ["/etc/qssh/qsshd.config", "/etc/qssh/qsshd.env"]
+
+[package.metadata.deb.systemd-units]
+unit-scripts = "packaging"
+unit-name = "qsshd"
+enable = true
+start = false
