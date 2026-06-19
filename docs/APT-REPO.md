@@ -1,8 +1,12 @@
-# Paraxiom APT repository (apt.paraxiom.org)
+# Paraxiom APT repository (paraxiom.github.io/apt)
 
-Self-hosted, GPG-signed APT repository served from the OVH VPS
-(`148.113.197.101`), built with `reprepro`. The signing key lives **only on the
-VPS** — it is never copied into CI.
+**The live repository is hosted on GitHub Pages at
+`https://paraxiom.github.io/apt`** (GPG-signed). End users install from there —
+see [End-user install](#3-end-user-install) below.
+
+The VPS/`reprepro` flow documented in sections 1–2 is the **legacy self-host
+option** (formerly served from the OVH VPS, now retired); kept for reference in
+case a self-hosted mirror is needed again.
 
 ```
 build host / CI            OVH VPS (apt.paraxiom.org)
@@ -44,8 +48,8 @@ on-VPS key). Override targets with `APT_VPS`, `APT_REPO_DIR`, `APT_CODENAME`.
 ## 3. End-user install
 
 ```bash
-curl -fsSL https://apt.paraxiom.org/paraxiom.gpg | sudo tee /usr/share/keyrings/paraxiom.gpg >/dev/null
-echo "deb [signed-by=/usr/share/keyrings/paraxiom.gpg] https://apt.paraxiom.org stable main" \
+curl -fsSL https://paraxiom.github.io/apt/paraxiom.gpg | sudo tee /usr/share/keyrings/paraxiom.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/paraxiom.gpg] https://paraxiom.github.io/apt stable main" \
   | sudo tee /etc/apt/sources.list.d/paraxiom.list
 sudo apt-get update
 sudo apt-get install qssh

@@ -53,11 +53,23 @@ Total: **909+ theorems** across 10 systems. All Lean 4, all zero sorries.
 
 ## Install
 
+### macOS / Linux (Homebrew)
+
+```bash
+brew tap paraxiom/tap
+brew trust paraxiom/tap     # one-time: clears Homebrew's third-party-tap check
+brew install qssh
+```
+
+Builds from source (Homebrew pulls in the Rust toolchain automatically). Works
+on macOS and on Linux via Homebrew — including ARM, where the `.deb` below is
+not yet published.
+
 ### Debian / Ubuntu (APT)
 
 ```bash
-curl -fsSL https://apt.paraxiom.org/paraxiom.gpg | sudo tee /usr/share/keyrings/paraxiom.gpg >/dev/null
-echo "deb [signed-by=/usr/share/keyrings/paraxiom.gpg] https://apt.paraxiom.org stable main" \
+curl -fsSL https://paraxiom.github.io/apt/paraxiom.gpg | sudo tee /usr/share/keyrings/paraxiom.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/paraxiom.gpg] https://paraxiom.github.io/apt stable main" \
   | sudo tee /etc/apt/sources.list.d/paraxiom.list
 sudo apt-get update
 sudo apt-get install qssh
