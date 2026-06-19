@@ -1,7 +1,8 @@
 # Rust
 /target
 **/*.rs.bk
-Cargo.lock
+# Cargo.lock is tracked: qssh ships binaries, so reproducible builds
+# (cargo install --locked, Homebrew formula) need the locked dep graph.
 
 # IDE
 .idea/
