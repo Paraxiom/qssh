@@ -206,3 +206,28 @@ pub struct QuantumCapabilities {
 pub use client::QsshClient;
 pub use client::ReconnectConfig;
 pub use server::QsshServer;
+
+#[cfg(test)]
+mod default_kex_tests {
+    use super::{KexAlgorithm, QsshConfig};
+
+    // Security regression guard: the default KEX must be a real KEM.
+    // FalconSignedShares authenticates but derives the session key from
+    // values sent in cleartext, so it provides NO confidentiality. It must
+    // never be the silent default. See PR fixing the auth-only default.
+
+    #[test]
+    fn enum_default_kex_is_confidential_mlkem1024() {
+        assert_eq!(KexAlgorithm::default(), KexAlgorithm::MlKem1024);
+        assert_ne!(KexAlgorithm::default(), KexAlgorithm::FalconSignedShares);
+    }
+
+    #[test]
+    fn qsshconfig_default_kex_is_confidential_mlkem1024() {
+        assert_eq!(QsshConfig::default().kex_algorithm, KexAlgorithm::MlKem1024);
+        assert_ne!(
+            QsshConfig::default().kex_algorithm,
+            KexAlgorithm::FalconSignedShares
+        );
+    }
+}
