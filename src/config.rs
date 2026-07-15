@@ -18,7 +18,7 @@ pub struct HostConfig {
     pub remote_forward: Vec<String>,
     pub dynamic_forward: Vec<String>,
     pub pq_algorithm: Option<PqAlgorithm>,
-    /// Key exchange algorithm (default: FalconSignedShares for backward compatibility)
+    /// Key exchange algorithm (default: ML-KEM-1024, FIPS 203 — confidential PQ KEX)
     pub kex_algorithm: Option<KexAlgorithm>,
     pub use_qkd: bool,
     pub qkd_endpoint: Option<String>,
@@ -263,7 +263,7 @@ impl ConfigParser {
             config.pq_algorithm = self.default_config.pq_algorithm.or(Some(PqAlgorithm::Falcon512));
         }
         if config.kex_algorithm.is_none() {
-            config.kex_algorithm = self.default_config.kex_algorithm.or(Some(KexAlgorithm::FalconSignedShares));
+            config.kex_algorithm = self.default_config.kex_algorithm.or(Some(KexAlgorithm::MlKem1024));
         }
         if config.key_rotation_interval.is_none() {
             config.key_rotation_interval = self.default_config.key_rotation_interval.or(Some(3600));
@@ -325,7 +325,7 @@ impl ConfigParser {
             qkd_key_path: host_config.qkd_key_path,
             qkd_ca_path: host_config.qkd_ca_path,
             pq_algorithm: host_config.pq_algorithm.unwrap_or(PqAlgorithm::Falcon512),
-            kex_algorithm: host_config.kex_algorithm.unwrap_or(KexAlgorithm::FalconSignedShares),
+            kex_algorithm: host_config.kex_algorithm.unwrap_or(KexAlgorithm::MlKem1024),
             key_rotation_interval: host_config.key_rotation_interval.unwrap_or(3600),
             security_tier: SecurityTier::default(),
             quantum_native: true,  // Default to quantum-native transport
@@ -468,9 +468,9 @@ Host legacy-server
         let legacy = parser.get_host_config("legacy-server");
         assert_eq!(legacy.kex_algorithm, Some(KexAlgorithm::FalconSignedShares));
 
-        // Test default (should be FalconSignedShares for backward compat)
+        // Test default (unset/unknown -> secure ML-KEM-1024, not auth-only Falcon)
         let unknown = parser.get_host_config("unknown-server");
-        assert_eq!(unknown.kex_algorithm, Some(KexAlgorithm::FalconSignedShares));
+        assert_eq!(unknown.kex_algorithm, Some(KexAlgorithm::MlKem1024));
     }
 
     #[test]
