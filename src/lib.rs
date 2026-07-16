@@ -100,7 +100,7 @@ pub struct QsshConfig {
     /// Post-quantum signature algorithm to use
     pub pq_algorithm: PqAlgorithm,
 
-    /// Key exchange algorithm (default: FalconSignedShares for backward compatibility)
+    /// Key exchange algorithm (default: ML-KEM-1024, FIPS 203 — confidential PQ KEX)
     #[serde(default)]
     pub kex_algorithm: KexAlgorithm,
 
@@ -127,7 +127,7 @@ impl Default for QsshConfig {
             qkd_key_path: None,
             qkd_ca_path: None,
             pq_algorithm: PqAlgorithm::Falcon512,
-            kex_algorithm: KexAlgorithm::FalconSignedShares,
+            kex_algorithm: KexAlgorithm::MlKem1024,
             key_rotation_interval: 3600,
             security_tier: SecurityTier::default(),  // T2: Hardened PQ
             quantum_native: true,  // Default to quantum-native transport
@@ -155,12 +155,15 @@ pub enum PqAlgorithm {
 /// Key exchange algorithm for QSSH handshake
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub enum KexAlgorithm {
-    /// Falcon-signed ephemeral shares (original QSSH, backward compatible)
-    #[default]
+    /// Falcon-signed ephemeral shares (original QSSH, backward compatible).
+    /// NOTE: authentication only — the session key is derived from values sent
+    /// in cleartext, so this KEX provides no confidentiality. Kept for interop;
+    /// never selected as a silent default.
     FalconSignedShares,
     /// ML-KEM-768 (FIPS 203, NIST Level 3)
     MlKem768,
     /// ML-KEM-1024 (FIPS 203, NIST Level 5)
+    #[default]
     MlKem1024,
     /// X25519 + ML-KEM-768 hybrid (requires hybrid-kex feature)
     #[cfg(feature = "hybrid-kex")]
@@ -203,3 +206,28 @@ pub struct QuantumCapabilities {
 pub use client::QsshClient;
 pub use client::ReconnectConfig;
 pub use server::QsshServer;
+
+#[cfg(test)]
+mod default_kex_tests {
+    use super::{KexAlgorithm, QsshConfig};
+
+    // Security regression guard: the default KEX must be a real KEM.
+    // FalconSignedShares authenticates but derives the session key from
+    // values sent in cleartext, so it provides NO confidentiality. It must
+    // never be the silent default. See PR fixing the auth-only default.
+
+    #[test]
+    fn enum_default_kex_is_confidential_mlkem1024() {
+        assert_eq!(KexAlgorithm::default(), KexAlgorithm::MlKem1024);
+        assert_ne!(KexAlgorithm::default(), KexAlgorithm::FalconSignedShares);
+    }
+
+    #[test]
+    fn qsshconfig_default_kex_is_confidential_mlkem1024() {
+        assert_eq!(QsshConfig::default().kex_algorithm, KexAlgorithm::MlKem1024);
+        assert_ne!(
+            QsshConfig::default().kex_algorithm,
+            KexAlgorithm::FalconSignedShares
+        );
+    }
+}
