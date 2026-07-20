@@ -63,6 +63,13 @@ struct Args {
     #[clap(short = 'c', long)]
     command: Option<String>,
 
+    /// Forward-only: do NOT request a shell or a remote command. Hold the
+    /// connection open on the port forwards alone (like OpenSSH `-N`). Required
+    /// against a forward-only daemon (e.g. `qsshd --quantum-native`), which
+    /// refuses shell/exec channels — the reason `-c "sleep infinity"` flaps.
+    #[clap(short = 'N', long = "no-command")]
+    no_command: bool,
+
     /// Use password authentication
     #[clap(short = 'P', long)]
     use_password: bool,
@@ -413,8 +420,23 @@ async fn main() {
                     }
                 }
 
-                // Execute command or start shell
-                if let Some(ref command) = args.command {
+                // Forward-only (-N), execute command (-c), or start shell.
+                if args.no_command {
+                    // No shell, no exec channel — just hold the connection open
+                    // servicing the port forwards. This is what a forward-only
+                    // daemon (--quantum-native) expects; requesting a shell/exec
+                    // there times out and makes --persistent flap.
+                    if has_remote_forwards || has_forwards {
+                        info!("Forward-only mode (-N): holding connection for port forwards");
+                        info!("Press Ctrl+C to disconnect");
+                        if let Err(e) = client.run_forward_loop().await {
+                            log::debug!("Forward loop ended: {}", e);
+                        }
+                    } else {
+                        eprintln!("-N/--no-command requires at least one -L/-R/-D forward");
+                        if reconnect_config.is_none() { process::exit(1); }
+                    }
+                } else if let Some(ref command) = args.command {
                     match client.exec_with_status(command).await {
                         Ok((output, exit_code)) => {
                             print!("{}", output);
