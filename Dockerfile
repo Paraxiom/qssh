@@ -11,7 +11,7 @@
 #   docker build -t qssh-hardened --build-arg SECURITY_TIER=t3 --build-arg FEATURES=sftp,quantum-native .
 
 # ── Stage 1: Build ────────────────────────────────────────────────
-FROM rust:1.85-slim-bookworm AS builder
+FROM rust:1-slim-bookworm AS builder
 
 ARG FEATURES="sftp,hybrid-kex"
 ARG STRIP="true"
@@ -45,8 +45,14 @@ RUN mkdir -p src/bin examples && \
 COPY src/ src/
 COPY examples/ examples/
 
-# Build with selected features
-RUN cargo build --release --features "${FEATURES}" \
+# Build with selected features.
+# The dummy dep-cache stub otherwise survives cargo's freshness check and ships
+# a ~330 KB stub instead of the real ~8 MB binary. `cargo clean -p qssh` resets
+# the qssh crate's fingerprint (lib + all bins) so the real COPY'd source MUST
+# recompile; external deps stay cached. `touch` bumps mtimes as a belt-and-braces.
+RUN find src examples -name '*.rs' -exec touch {} + ; \
+    cargo clean --release -p qssh 2>/dev/null || true ; \
+    cargo build --release --features "${FEATURES}" \
     --bin qssh --bin qsshd --bin qscp --bin qssh-keygen --bin qssh-sign
 
 # Strip binaries if requested
