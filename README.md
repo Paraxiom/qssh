@@ -6,6 +6,21 @@ qssh is a pure Rust implementation of SSH with post-quantum cryptography. It rep
 
 ---
 
+## Security notice (2026-09-13)
+
+**Every release before 0.4.2 defaults to a key exchange that provides no
+confidentiality.** The `FalconSignedShares` exchange authenticates the peers,
+but derives the session key from values sent in cleartext, so a passive
+observer can reconstruct it. An ML-KEM exchange existed in the code, but the
+client hardcoded the default algorithm and never selected it. Found
+2026-07-15, fixed on `main` 2026-07-16 (PR #5), released as **0.4.2** on
+2026-09-13: ML-KEM-1024 is the default and the configured algorithm is
+honoured. Earlier crates.io versions are yanked; the v0.4.1 release, the
+Homebrew formula and the APT package built from the June tag are superseded.
+Upgrade, and treat any session made under an earlier default configuration as
+having had no confidentiality against a passive attacker. Details in
+[CHANGELOG.md](CHANGELOG.md) and [SECURITY.md](SECURITY.md).
+
 ## What It Does
 
 | Capability | Detail |
@@ -98,19 +113,16 @@ Building the package yourself and the APT-repo setup are documented in
 
 Pre-built binaries are available under [Releases](https://github.com/Paraxiom/qssh/releases).
 
-## Source Access
+## Licence
 
-Source code is available under the [Paraxiom Source Collaboration License](LICENSE.md).
+Two regimes, at the recipient's choice: **GPL-3.0-only** (the default,
+reciprocal) or a **Paraxiom commercial licence** for products that cannot
+carry the GPL. See [LICENSE.md](LICENSE.md).
 
-**We choose collaboration over extraction.** If you're working on post-quantum infrastructure — whether in research, government, defence, or industry — reach out. We grant access to people who want to build together.
-
-To request access:
-
-1. Email **sylvain@paraxiom.org** with a brief description of your work
-2. We'll set up a collaboration agreement (NDA if required by your context)
-3. You get full source access to the private development repository
-
-That door opens when you knock.
+**We choose collaboration over extraction.** If you're working on post-quantum
+infrastructure — whether in research, government, defence, or industry — write
+to **sylvain@paraxiom.org** with a brief description of your work. That door
+opens when you knock.
 
 ## Citation
 
