@@ -1,6 +1,6 @@
 [package]
 name = "qssh"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 authors = ["Paraxiom"]
 license = "GPL-3.0-only"
@@ -157,8 +157,8 @@ name = "quantum_harmony_validator"
 # ----------------------------------------------------------------------------
 [package.metadata.deb]
 maintainer = "Paraxiom <sylvain@paraxiom.org>"
-copyright = "2026, Paraxiom. Dual-licensed MIT OR Apache-2.0."
-license-file = ["LICENSE-MIT", "0"]
+copyright = "2026, Paraxiom. GPL-3.0-only, or a Paraxiom commercial licence (see LICENSE.md)."
+license-file = ["LICENSE-GPL3", "0"]
 section = "net"
 priority = "optional"
 depends = "$auto"
