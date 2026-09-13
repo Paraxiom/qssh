@@ -1,8 +1,12 @@
 # qssh
 
-**Post-Quantum SSH. Drop-in replacement. Formally verified.**
+**A post-quantum remote shell in pure Rust. Its own protocol, not an OpenSSH replacement.**
 
-qssh is a pure Rust implementation of SSH with post-quantum cryptography. It replaces OpenSSH's classical key exchange and authentication with quantum-resistant algorithms while maintaining full protocol compatibility.
+qssh is a remote shell, file copy and key agent written in pure Rust around
+post-quantum primitives: ML-KEM-1024 key exchange, Falcon and SPHINCS+
+authentication. It speaks its own protocol. It is **not** wire compatible with
+OpenSSH: a qssh client talks to a qsshd server, and neither interoperates with
+OpenSSH peers.
 
 ---
 
@@ -28,43 +32,49 @@ having had no confidentiality against a passive attacker. Details in
 | **Key exchange** | ML-KEM-1024 (NIST FIPS 203) |
 | **Authentication** | Falcon-1024, SPHINCS+-256s |
 | **Encryption** | AES-256-GCM, ChaCha20-Poly1305 |
-| **Tests** | 132 automated tests |
-| **Formal proofs** | 67 Lean 4 theorems, zero sorries, Mathlib v4.27.0 |
+| **Tests** | 164 automated tests in the library crate, all run in CI |
+| **Lean 4** | 71 lemmas on parameter and structural conformance, zero sorries, Mathlib v4.27.0. Not proofs of protocol security. |
 | **Patents** | None. Patent-free by design. |
 | **Dependencies** | Pure Rust. No OpenSSH fork, no C bindings. |
-| **3-tier verification** | Kani (panic-free), Verus (functional correctness), Lean 4 (mathematical foundations) |
+| **Other harnesses** | Kani and Verus harnesses exist in `kani-proofs/` and `verus-proofs/`; they are not run in CI and no claim rests on them. |
 
-## The Problem qssh Solves
+## Where qssh Stands
 
-Every SSH connection today uses RSA or ECDSA — both broken by Shor's algorithm on a sufficiently powerful quantum computer. The NIST deadline for PQC migration is 2035, but "harvest now, decrypt later" attacks mean data captured today can be decrypted retroactively.
+OpenSSH already ships a hybrid post-quantum key exchange by default:
+`sntrup761x25519` since 9.0 (2022) and `mlkem768x25519` since 10.0 (2025).
+For most users, "harvest now, decrypt later" on the SSH key exchange is
+addressed upstream, in audited, interoperable software. If that is your
+problem, use OpenSSH.
 
-qssh provides quantum-resistant SSH today. Not a patch on OpenSSH — a ground-up implementation with formal proofs that the cryptographic properties hold.
+What qssh adds is post-quantum **authentication**: Falcon-1024 and SPHINCS+
+host and user keys, which OpenSSH does not ship yet, in a small pure Rust
+codebase you can read end to end. What it costs: no OpenSSH interoperability,
+no external audit, and one serious default-configuration bug that we found
+and fixed ourselves (see the notice above). Treat it as a research and
+experimentation tool, not as infrastructure.
 
-## Formal Verification
+## What Is Verified, and What Is Not
 
-Three levels of verification — no other SSH implementation offers this:
+| Layer | Status |
+|---|---|
+| Parameter and structure conformance (key and ciphertext sizes, framing, encodings) | 71 Lean 4 lemmas, `lake build` reproduces them with zero sorries |
+| Panic freedom, functional correctness | Kani and Verus harnesses in the repository; not run in CI; unverified as of this release |
+| Protocol security (handshake, key derivation) | Not verified. No symbolic or computational model of the qssh handshake exists. The July 2026 default key exchange bug was found by inspection, not by a proof. |
 
-| Level | Tool | What It Proves |
-|---|---|---|
-| **Panic-free** | Kani (AWS) | No execution path causes a crash |
-| **Functional correctness** | Verus (Microsoft Research) | Code does exactly what it claims |
-| **Mathematical foundations** | Lean 4 + Mathlib | Cryptographic properties are proven |
-
-Published on Zenodo: [DOI 10.5281/zenodo.18663125](https://doi.org/10.5281/zenodo.18663125)
+The Lean development is on Zenodo: [DOI 10.5281/zenodo.18663125](https://doi.org/10.5281/zenodo.18663125)
 
 ## Related Work
 
 qssh is part of the Paraxiom post-quantum infrastructure stack:
 
-| Project | Description | Theorems |
+| Project | Description | Lean 4 lemmas (build-reproduced, 2026-09-07) |
 |---|---|---|
-| [qssl](https://github.com/Paraxiom/qssl) | PQ TLS — 12 cipher suites | 100 |
-| [PQTG](https://doi.org/10.5281/zenodo.18786526) | PQ Transport Gateway for QKD control channels | 99 |
-| Drista | PQ encrypted chat (ML-KEM-1024, STARK, Nostr+IPFS) | 100 |
-| QuantumHarmony | PQ L1 blockchain, live on 3 validators | 76 |
-| Coherence Shield | AI trust proxy with toroidal logit bias | 115 |
+| [qssl](https://github.com/Paraxiom/qssl) | PQ TLS, 12 cipher suites | 100 |
+| [PQTG](https://github.com/Paraxiom/pq-transport-gateway) | PQ transport gateway for QKD key delivery (ETSI GS QKD 014), validated on a commercial QKD link | 111 |
+| [QuantumHarmony](https://github.com/Paraxiom/quantum-harmony-node-public) | PQ L1 blockchain, live testnet | 142 |
 
-Total: **909+ theorems** across 10 systems. All Lean 4, all zero sorries.
+The counts above are what `lake build` reproduces today. Earlier published
+portfolio totals were never reproduced by a build and have been withdrawn.
 
 ## Install
 
