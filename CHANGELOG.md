@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.3 (2026-09-13), documentation only
+
+- README rewritten to state what qssh is and is not: its own protocol, not
+  wire compatible with OpenSSH; OpenSSH already ships hybrid post-quantum key
+  exchange by default; qssh adds post-quantum authentication. Verification
+  claims reduced to what is reproduced (71 Lean conformance lemmas; Kani and
+  Verus harnesses not run in CI; protocol security not verified). No code
+  change from 0.4.2.
+
 ## 0.4.2 (2026-09-13), security release
 
 - **Default key exchange is now ML-KEM-1024.** Before this release the default,
