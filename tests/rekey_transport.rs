@@ -170,7 +170,7 @@ async fn a_second_rekey_cannot_start_while_one_is_in_flight() {
         let (client, _server) = pair().await;
         // No server reader is running, so the first rekey stays pending.
         let _pending = client.initiate_rekey().await.unwrap();
-        let err = client.initiate_rekey().await.err().expect("second rekey must be refused");
+        let err = client.initiate_rekey().await.expect_err("second rekey must be refused");
         assert!(format!("{err}").contains("already in progress"), "{err}");
     })
     .await
@@ -185,8 +185,7 @@ async fn new_keys_without_a_pending_rekey_is_a_protocol_error() {
         let err = client
             .receive_message::<Message>()
             .await
-            .err()
-            .expect("stray NewKeys must be rejected");
+            .expect_err("stray NewKeys must be rejected");
         assert!(format!("{err}").contains("NewKeys without a pending rekey"), "{err}");
     })
     .await
