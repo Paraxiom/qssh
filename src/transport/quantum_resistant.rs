@@ -505,7 +505,7 @@ impl QuantumTransport {
     }
 
     /// Receive and deserialize QSSH protocol message
-    pub async fn receive_message<T: for<'de> serde::Deserialize<'de>>(&self) -> Result<T> {
+    pub async fn receive_message<T: for<'de> serde::Deserialize<'de> + 'static>(&self) -> Result<T> {
         let (frame_type, data) = self.receive_frame().await?;
 
         if frame_type != QuantumFrameType::Data {
@@ -526,7 +526,7 @@ impl crate::transport::QsshTransport for QuantumTransport {
         self.send_message(message).await
     }
 
-    async fn receive_message<T: for<'de> serde::Deserialize<'de>>(&self) -> Result<T> {
+    async fn receive_message<T: for<'de> serde::Deserialize<'de> + 'static>(&self) -> Result<T> {
         self.receive_message().await
     }
 
