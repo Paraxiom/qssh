@@ -353,6 +353,12 @@ impl<'a> ClientHandshake<'a> {
         let recv_crypto = SymmetricCrypto::from_shared_secret(&session_keys.server_write_key)?;
         log::debug!("Creating transport");
         let transport = Transport::new_bidirectional(self.stream, send_crypto, recv_crypto);
+        transport
+            .set_epoch_secret(crate::transport::initial_epoch_secret(
+                &session_keys.client_write_key,
+                &session_keys.server_write_key,
+            ))
+            .await;
 
         // Determine authentication method
         // Priority: 1. Certificate  2. Public key  3. Password  4. Ephemeral
@@ -770,6 +776,12 @@ impl ServerHandshake {
         let send_crypto = SymmetricCrypto::from_shared_secret(&session_keys.server_write_key)?;
         let recv_crypto = SymmetricCrypto::from_shared_secret(&session_keys.client_write_key)?;
         let transport = Transport::new_bidirectional(self.stream, send_crypto, recv_crypto);
+        transport
+            .set_epoch_secret(crate::transport::initial_epoch_secret(
+                &session_keys.client_write_key,
+                &session_keys.server_write_key,
+            ))
+            .await;
 
         // Receive authentication
         let auth_msg = match transport.receive_message::<Message>().await? {

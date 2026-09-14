@@ -5,7 +5,9 @@ use crate::{PqAlgorithm, KexAlgorithm};
 
 /// The current supported version of the QSSH protocol
 /// Represented as a (Major, Minor) tuple (e.g., 0.1)
-pub const PROTOCOL_VERSION: (u8, u8) = (0, 1);
+/// 0.2 (qssh 0.5.0): the in-band rekey moved to ML-KEM-1024 with a two-phase
+/// key switch (`RekeyInit` / `RekeyReply` / `NewKeys`); 0.1 peers are refused.
+pub const PROTOCOL_VERSION: (u8, u8) = (0, 2);
 
 /// Protocol messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,7 +37,8 @@ pub enum Message {
     Ping(u64),
     Pong(u64),
     
-    /// Key rotation
+    /// Legacy key rotation (protocol 0.1). Refused since 0.5.0: it derived the
+    /// new keys from cleartext shares and switched both directions at once.
     Rekey(RekeyMessage),
 
     /// Global request (not channel-specific, e.g., remote port forwarding)
@@ -44,6 +47,16 @@ pub enum Message {
     GlobalRequestSuccess(GlobalRequestSuccessMessage),
     /// Global request failure
     GlobalRequestFailure,
+
+    /// Rekey, phase 1 (initiator): a fresh ML-KEM-1024 encapsulation key,
+    /// sent under the current keys.
+    RekeyInit(RekeyInitMessage),
+    /// Rekey, phase 2 (responder): the ciphertext encapsulated to that key,
+    /// sent under the current keys and immediately followed by `NewKeys`.
+    RekeyReply(RekeyReplyMessage),
+    /// Rekey, phase 3 (both directions): the last frame under the old keys.
+    /// Every frame after it, in that direction, is under the new epoch.
+    NewKeys,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -239,6 +252,18 @@ pub enum ChannelType {
 pub struct DisconnectMessage {
     pub reason_code: u32,
     pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RekeyInitMessage {
+    /// ML-KEM-1024 encapsulation key (ephemeral, one per rotation).
+    pub kem_ek: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RekeyReplyMessage {
+    /// ML-KEM-1024 ciphertext for the initiator's encapsulation key.
+    pub kem_ct: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

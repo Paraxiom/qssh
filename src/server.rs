@@ -3,8 +3,8 @@
 use crate::{
     Result, QsshError,
     audit::AuditLogger,
-    crypto::{PqKeyExchange, SymmetricCrypto},
-    transport::{Transport, Message, ChannelMessage, ChannelType, RekeyMessage,
+    crypto::PqKeyExchange,
+    transport::{Transport, Message, ChannelMessage, ChannelType,
         GlobalRequestMessage, GlobalRequestType, GlobalRequestSuccessMessage},
     handshake::ServerHandshake,
     shell_handler_thread::ShellSessionThread,
@@ -344,75 +344,17 @@ async fn handle_client_message(
         Message::Ping(nonce) => {
             transport.send_message(&Message::Pong(nonce)).await?;
         }
-        Message::Rekey(rekey) => {
-            log::info!("Client {} requesting rekey", username);
-            handle_rekey(rekey, transport, username).await?;
+        Message::Rekey(_) => {
+            // Protocol 0.1 in-band rekey: cleartext shares and a one-shot key
+            // switch. Refused; 0.2 peers never send it (the transport handles
+            // RekeyInit/RekeyReply/NewKeys before messages reach this loop).
+            log::warn!("Client {} sent a legacy (0.1) rekey; refused", username);
+            return Err(QsshError::Protocol("Legacy rekey is not supported".into()));
         }
         _ => {
             log::debug!("Unhandled message from {}", username);
         }
     }
-    Ok(())
-}
-
-/// Handle rekey request from client.
-/// Server verifies client's new key share, generates its own new key material,
-/// derives new session keys, sends response, and updates transport crypto.
-async fn handle_rekey(
-    client_rekey: RekeyMessage,
-    transport: &Transport,
-    username: &str,
-) -> Result<()> {
-    use sha3::Sha3_256;
-    use hkdf::Hkdf;
-
-    log::info!("Processing rekey from {} (rekey #{})", username, transport.rekey_count() + 1);
-
-    // 1. Generate server's new key exchange (also used for verification)
-    let server_kex = PqKeyExchange::new()?;
-
-    // 2. Verify the client's key share signature using their public key
-    let verified = server_kex.verify_falcon(
-        &client_rekey.new_key_share,
-        &client_rekey.new_key_share_signature,
-        &client_rekey.new_falcon_public_key,
-    )?;
-
-    if !verified {
-        log::warn!("Rekey signature verification failed for {}", username);
-        return Err(QsshError::Crypto("Rekey signature verification failed".into()));
-    }
-    let (server_share, server_sig) = server_kex.create_key_share()?;
-
-    // 3. Derive new shared secret: HKDF(SHA3-256, client_share || server_share)
-    let mut ikm = Vec::new();
-    ikm.extend_from_slice(&client_rekey.new_key_share);
-    ikm.extend_from_slice(&server_share);
-
-    let hk = Hkdf::<Sha3_256>::new(None, &ikm);
-    let mut server_write_key = vec![0u8; 32];
-    let mut client_write_key = vec![0u8; 32];
-    hk.expand(b"qssh-rekey-server-write", &mut server_write_key)
-        .map_err(|_| QsshError::Crypto("HKDF expand failed for server write key".into()))?;
-    hk.expand(b"qssh-rekey-client-write", &mut client_write_key)
-        .map_err(|_| QsshError::Crypto("HKDF expand failed for client write key".into()))?;
-
-    // 4. Send server's rekey response (before switching keys!)
-    let server_rekey = RekeyMessage {
-        new_falcon_public_key: server_kex.falcon_pk.clone(),
-        new_key_share: server_share,
-        new_key_share_signature: server_sig,
-        request_qkd: false,
-    };
-    transport.send_message(&Message::Rekey(server_rekey)).await?;
-
-    // 5. Switch to new keys
-    // Server sends with server_write_key, receives with client_write_key
-    let new_send = SymmetricCrypto::from_shared_secret(&server_write_key)?;
-    let new_recv = SymmetricCrypto::from_shared_secret(&client_write_key)?;
-    transport.update_keys(new_send, new_recv).await?;
-
-    log::info!("Rekey complete for {} — new session keys active", username);
     Ok(())
 }
 

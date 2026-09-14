@@ -10,7 +10,12 @@ use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{oneshot, Mutex, Notify};
+use crate::crypto::{mlkem1024_encapsulate, MlKem1024KeyPair};
+use hkdf::Hkdf;
+use sha3::{Digest, Sha3_256};
+use std::any::Any;
+use zeroize::Zeroize;
 
 pub mod channel;
 pub mod protocol;
@@ -27,7 +32,7 @@ pub trait QsshTransport: Send + Sync {
     async fn send_message<T: serde::Serialize + Send + Sync>(&self, message: &T) -> Result<()>;
 
     /// Receive a message
-    async fn receive_message<T: for<'de> serde::Deserialize<'de>>(&self) -> Result<T>;
+    async fn receive_message<T: for<'de> serde::Deserialize<'de> + 'static>(&self) -> Result<T>;
 
     /// Close the transport
     async fn close(&self) -> Result<()>;
@@ -142,7 +147,7 @@ impl QsshTransport for MockTransport {
         Ok(())
     }
 
-    async fn receive_message<T: for<'de> serde::Deserialize<'de>>(&self) -> Result<T> {
+    async fn receive_message<T: for<'de> serde::Deserialize<'de> + 'static>(&self) -> Result<T> {
         let payload = self.receive_raw_message().await?;
         let message = bincode::deserialize(&payload)
             .map_err(|e| QsshError::Protocol(format!("Deserialization failed: {}", e)))?;
@@ -212,7 +217,44 @@ fn try_pop_frame(buffer: &mut VecDeque<u8>) -> Result<Option<Vec<u8>>> {
     Ok(Some(payload))
 }
 
+/// The value both peers seed the rekey chain with, computed from the
+/// handshake's directional keys in a role-independent order.
+pub fn initial_epoch_secret(client_write_key: &[u8], server_write_key: &[u8]) -> [u8; 32] {
+    let mut h = Sha3_256::new();
+    h.update(b"qssh-epoch-v2");
+    h.update(client_write_key);
+    h.update(server_write_key);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&h.finalize());
+    out
+}
+
+/// In-flight state of an in-band rekey (see [`Transport::initiate_rekey`]).
+#[derive(Default)]
+struct RekeyState {
+    /// Initiator only: our ephemeral ML-KEM-1024 keypair until the reply arrives.
+    pending_dk: Option<MlKem1024KeyPair>,
+    /// Both roles: the receive key to install when the peer's `NewKeys` arrives.
+    pending_recv: Option<SymmetricCrypto>,
+    /// Initiator only: fires once both directions run under the new epoch.
+    done: Option<oneshot::Sender<()>>,
+}
+
 /// Transport layer for encrypted communication
+///
+/// # In-band rekey (protocol 0.2)
+///
+/// Three frames, all sent under the keys in force at that moment:
+/// `RekeyInit{ek}` from the initiator, then `RekeyReply{ct}` and `NewKeys`
+/// from the responder, then `NewKeys` from the initiator. Each side switches
+/// its **send** key right after writing its own `NewKeys` (under the writer
+/// lock, so no other frame can slip between them) and its **receive** key
+/// right after reading the peer's `NewKeys`. Frames are strictly ordered per
+/// direction, so no frame is ever decrypted under the wrong epoch. The
+/// control frames are consumed inside [`Transport::receive_message`] by
+/// whichever task owns the reader, so a rekey never needs a second reader
+/// and can never steal a data frame. New keys come from a fresh ML-KEM-1024
+/// encapsulation, chained to the previous epoch through an HKDF salt.
 #[derive(Clone)]
 pub struct Transport {
     reader: Arc<Mutex<OwnedReadHalf>>,
@@ -227,6 +269,10 @@ pub struct Transport {
     send_compression: Arc<Mutex<CompressionContext>>,
     /// Compression context for incoming data
     recv_compression: Arc<Mutex<CompressionContext>>,
+    /// Chains successive rekeys to the handshake (see `initial_epoch_secret`).
+    epoch_secret: Arc<Mutex<[u8; 32]>>,
+    /// In-flight rekey, if any.
+    rekey: Arc<Mutex<RekeyState>>,
 }
 
 impl Transport {
@@ -250,6 +296,8 @@ impl Transport {
                 CompressionAlgorithm::None,
                 6,
             ))),
+            epoch_secret: Arc::new(Mutex::new([0u8; 32])),
+            rekey: Arc::new(Mutex::new(RekeyState::default())),
         })
     }
 
@@ -276,40 +324,42 @@ impl Transport {
                 CompressionAlgorithm::None,
                 6,
             ))),
+            epoch_secret: Arc::new(Mutex::new([0u8; 32])),
+            rekey: Arc::new(Mutex::new(RekeyState::default())),
         }
     }
 
     /// Send an encrypted message
     pub async fn send_message<T: Serialize>(&self, message: &T) -> Result<()> {
         log::trace!("Transport: sending message");
-        // Serialize message
         let plaintext = bincode::serialize(message)
             .map_err(|e| QsshError::Protocol(format!("Serialization failed: {}", e)))?;
-
         if plaintext.len() > MAX_MESSAGE_SIZE {
             return Err(QsshError::Protocol("Message too large".into()));
         }
+        // The writer lock is taken FIRST and held through sequencing, encryption
+        // and the write, so a key switch (which also takes it) can never
+        // interleave with a frame sequenced or encrypted under the previous
+        // epoch.
+        let mut writer = self.writer.lock().await;
+        self.write_frame_locked(&mut writer, plaintext).await
+    }
 
-        // Compress serialized payload before encryption
+    /// Compress, sequence, encrypt and write one frame. The caller holds `writer`.
+    async fn write_frame_locked(&self, writer: &mut OwnedWriteHalf, plaintext: Vec<u8>) -> Result<()> {
         let plaintext = {
             let mut comp = self.send_compression.lock().await;
             comp.compress(&plaintext)?
         };
-
-        // Get sequence number
         let seq = {
             let mut seq_lock = self.send_sequence.lock().await;
             let current = *seq_lock;
             *seq_lock += 1;
             current
         };
-
-        // Add sequence number to prevent replay attacks
-        let mut authenticated_data = Vec::new();
+        let mut authenticated_data = Vec::with_capacity(8 + plaintext.len());
         authenticated_data.extend_from_slice(&seq.to_be_bytes());
         authenticated_data.extend_from_slice(&plaintext);
-
-        // Encrypt (read lock: non-blocking for concurrent recv)
         let (ciphertext, nonce) = {
             let crypto = self
                 .send_crypto
@@ -317,16 +367,12 @@ impl Transport {
                 .map_err(|_| QsshError::Crypto("Send crypto lock poisoned".into()))?;
             crypto.encrypt(&authenticated_data)?
         };
-
         // Frame format: [4 bytes length][12 bytes nonce][ciphertext]
         let frame_length = (nonce.len() + ciphertext.len()) as u32;
-        let mut frame = Vec::new();
+        let mut frame = Vec::with_capacity(4 + frame_length as usize);
         frame.extend_from_slice(&frame_length.to_be_bytes());
         frame.extend_from_slice(&nonce);
         frame.extend_from_slice(&ciphertext);
-
-        // Send
-        let mut writer = self.writer.lock().await;
         log::trace!("Transport: writing {} bytes to stream", frame.len());
         writer.write_all(&frame).await.map_err(|e| {
             log::error!("Transport: failed to write to stream: {}", e);
@@ -336,16 +382,50 @@ impl Transport {
             log::error!("Transport: failed to flush stream: {}", e);
             QsshError::Io(e)
         })?;
-        log::trace!("Transport: message sent successfully");
-
         Ok(())
     }
 
-    /// Receive and decrypt a message
-    pub async fn receive_message<T: for<'de> Deserialize<'de>>(&self) -> Result<T> {
+    /// Receive and decrypt a message.
+    ///
+    /// In-band rekey control frames (`RekeyInit`, `RekeyReply`, `NewKeys`) are
+    /// consumed here and never returned to the caller, so the task that owns
+    /// the reader drives the rekey and no data frame can be lost to it.
+    pub async fn receive_message<T: for<'de> Deserialize<'de> + 'static>(&self) -> Result<T> {
         let mut reader = self.reader.lock().await;
+        loop {
+            let plaintext = self.read_frame_locked(&mut reader).await?;
+            if std::any::TypeId::of::<T>() == std::any::TypeId::of::<Message>() {
+                let message: Message = bincode::deserialize(&plaintext)
+                    .map_err(|e| QsshError::Protocol(format!("Deserialization failed: {}", e)))?;
+                match message {
+                    Message::RekeyInit(init) => {
+                        self.handle_rekey_init(init).await?;
+                        continue;
+                    }
+                    Message::RekeyReply(reply) => {
+                        self.handle_rekey_reply(reply).await?;
+                        continue;
+                    }
+                    Message::NewKeys => {
+                        self.handle_new_keys().await?;
+                        continue;
+                    }
+                    other => {
+                        let boxed: Box<dyn Any> = Box::new(other);
+                        return boxed
+                            .downcast::<T>()
+                            .map(|b| *b)
+                            .map_err(|_| QsshError::Protocol("Message type mismatch".into()));
+                    }
+                }
+            }
+            return bincode::deserialize(&plaintext)
+                .map_err(|e| QsshError::Protocol(format!("Deserialization failed: {}", e)));
+        }
+    }
 
-        // Read frame length
+    /// Read, decrypt, sequence-check and decompress one frame. The caller holds `reader`.
+    async fn read_frame_locked(&self, reader: &mut OwnedReadHalf) -> Result<Vec<u8>> {
         let mut length_bytes = [0u8; 4];
         log::trace!("Transport: attempting to read 4 bytes for frame length");
         reader.read_exact(&mut length_bytes).await.map_err(|e| {
@@ -353,18 +433,15 @@ impl Transport {
             QsshError::Io(e)
         })?;
         let frame_length = u32::from_be_bytes(length_bytes) as usize;
-
         if frame_length > MAX_MESSAGE_SIZE {
             return Err(QsshError::Protocol("Frame too large".into()));
         }
-
-        // Read nonce and ciphertext
+        if frame_length < 12 {
+            return Err(QsshError::Protocol("Frame too short".into()));
+        }
         let mut frame = vec![0u8; frame_length];
         reader.read_exact(&mut frame).await.map_err(QsshError::Io)?;
-
         let (nonce, ciphertext) = frame.split_at(12);
-
-        // Decrypt (read lock: non-blocking for concurrent send)
         let authenticated_data = {
             let crypto = self
                 .recv_crypto
@@ -372,45 +449,32 @@ impl Transport {
                 .map_err(|_| QsshError::Crypto("Recv crypto lock poisoned".into()))?;
             crypto.decrypt(ciphertext, nonce)?
         };
-
-        // Verify sequence number
         if authenticated_data.len() < 8 {
             return Err(QsshError::Protocol("Invalid message format".into()));
         }
-
         let (seq_bytes, plaintext) = authenticated_data.split_at(8);
         let received_seq = u64::from_be_bytes(
             seq_bytes
                 .try_into()
                 .map_err(|_| QsshError::Protocol("Invalid sequence number format".into()))?,
         );
-
-        // Check and update sequence number
         let expected_seq = {
             let mut seq_lock = self.recv_sequence.lock().await;
             let current = *seq_lock;
             *seq_lock += 1;
             current
         };
-
         if received_seq != expected_seq {
             return Err(QsshError::Protocol(format!(
                 "Invalid sequence number: expected {}, got {}",
                 expected_seq, received_seq
             )));
         }
-
-        // Decompress before deserialization
         let plaintext = {
             let mut comp = self.recv_compression.lock().await;
             comp.decompress(plaintext)?
         };
-
-        // Deserialize
-        let message = bincode::deserialize(&plaintext)
-            .map_err(|e| QsshError::Protocol(format!("Deserialization failed: {}", e)))?;
-
-        Ok(message)
+        Ok(plaintext)
     }
 
     /// Enable compression on this transport (called after handshake negotiation)
@@ -440,26 +504,89 @@ impl Transport {
         (send.stats().clone(), recv.stats().clone())
     }
 
-    /// Update encryption keys (rekey). Acquires write locks on both crypto instances
-    /// and resets sequence numbers to prevent nonce reuse with new keys.
-    pub async fn update_keys(
-        &self,
-        new_send: SymmetricCrypto,
-        new_recv: SymmetricCrypto,
-    ) -> Result<()> {
-        // Acquire writer mutex to ensure no send is in flight
-        let _writer_guard = self.writer.lock().await;
-        // Acquire reader mutex to ensure no recv is in flight
-        let _reader_guard = self.reader.lock().await;
+    /// Seed the rekey chain. Called once by the handshake with
+    /// [`initial_epoch_secret`], which both peers compute identically.
+    pub async fn set_epoch_secret(&self, secret: [u8; 32]) {
+        let mut epoch = self.epoch_secret.lock().await;
+        epoch.zeroize();
+        *epoch = secret;
+    }
 
-        // Swap crypto keys
-        {
-            let mut send = self
-                .send_crypto
-                .write()
-                .map_err(|_| QsshError::Crypto("Send crypto lock poisoned during rekey".into()))?;
-            *send = new_send;
-        }
+    /// Start an in-band rekey (phase 1 of 3). Sends a fresh ML-KEM-1024
+    /// encapsulation key under the current keys and returns a receiver that
+    /// fires once both directions run under the new epoch. The caller must
+    /// not read from the transport itself: whichever task owns the reader
+    /// completes the remaining phases inside [`Transport::receive_message`].
+    pub async fn initiate_rekey(&self) -> Result<oneshot::Receiver<()>> {
+        let (tx, rx) = oneshot::channel();
+        let kem_ek = {
+            let mut st = self.rekey.lock().await;
+            if st.pending_dk.is_some() || st.pending_recv.is_some() {
+                return Err(QsshError::Protocol("Rekey already in progress".into()));
+            }
+            let keypair = MlKem1024KeyPair::generate()?;
+            let ek = keypair.encapsulation_key().to_vec();
+            st.pending_dk = Some(keypair);
+            st.done = Some(tx);
+            ek
+        };
+        log::info!("Rekey #{}: initiating (ML-KEM-1024)", self.rekey_count() + 1);
+        self.send_message(&Message::RekeyInit(RekeyInitMessage { kem_ek })).await?;
+        Ok(rx)
+    }
+
+    /// Responder, phase 2: encapsulate, derive, reply, then switch our send key.
+    async fn handle_rekey_init(&self, init: RekeyInitMessage) -> Result<()> {
+        let (initiator_write, responder_write) = {
+            let mut st = self.rekey.lock().await;
+            if st.pending_dk.is_some() || st.pending_recv.is_some() {
+                return Err(QsshError::Protocol("RekeyInit while a rekey is in progress".into()));
+            }
+            let (mut ss, kem_ct) = mlkem1024_encapsulate(&init.kem_ek)?;
+            let keys = self.derive_epoch_keys(&ss).await?;
+            ss.zeroize();
+            st.pending_recv = Some(SymmetricCrypto::from_shared_secret(&keys.0)?);
+            drop(st);
+            self.send_message(&Message::RekeyReply(RekeyReplyMessage { kem_ct })).await?;
+            keys
+        };
+        let new_send = SymmetricCrypto::from_shared_secret(&responder_write)?;
+        let mut initiator_write = initiator_write;
+        let mut responder_write = responder_write;
+        initiator_write.zeroize();
+        responder_write.zeroize();
+        self.send_new_keys_and_switch(new_send).await
+    }
+
+    /// Initiator, phase 2: decapsulate, derive, then switch our send key.
+    async fn handle_rekey_reply(&self, reply: RekeyReplyMessage) -> Result<()> {
+        let (mut initiator_write, mut responder_write) = {
+            let mut st = self.rekey.lock().await;
+            let dk = st
+                .pending_dk
+                .take()
+                .ok_or_else(|| QsshError::Protocol("RekeyReply without a pending rekey".into()))?;
+            let mut ss = dk.decapsulate(&reply.kem_ct)?;
+            drop(dk);
+            let keys = self.derive_epoch_keys(&ss).await?;
+            ss.zeroize();
+            st.pending_recv = Some(SymmetricCrypto::from_shared_secret(&keys.1)?);
+            keys
+        };
+        let new_send = SymmetricCrypto::from_shared_secret(&initiator_write)?;
+        initiator_write.zeroize();
+        responder_write.zeroize();
+        self.send_new_keys_and_switch(new_send).await
+    }
+
+    /// Phase 3, receive side: the peer's `NewKeys` was the last frame under
+    /// the old keys, so install the pending receive key now.
+    async fn handle_new_keys(&self) -> Result<()> {
+        let mut st = self.rekey.lock().await;
+        let new_recv = st
+            .pending_recv
+            .take()
+            .ok_or_else(|| QsshError::Protocol("NewKeys without a pending rekey".into()))?;
         {
             let mut recv = self
                 .recv_crypto
@@ -467,24 +594,53 @@ impl Transport {
                 .map_err(|_| QsshError::Crypto("Recv crypto lock poisoned during rekey".into()))?;
             *recv = new_recv;
         }
-
-        // Reset sequence numbers to 0 for the new key epoch
-        {
-            let mut seq = self.send_sequence.lock().await;
-            *seq = 0;
+        *self.recv_sequence.lock().await = 0;
+        let count = self.rekey_count.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(tx) = st.done.take() {
+            let _ = tx.send(());
         }
-        {
-            let mut seq = self.recv_sequence.lock().await;
-            *seq = 0;
-        }
-
-        let count = self
-            .rekey_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
-        log::info!("Rekey #{} complete — new session keys active", count);
-
+        log::info!("Rekey #{} complete: both directions on new keys", count);
         Ok(())
+    }
+
+    /// Phase 3, send side: write `NewKeys` as the last frame under the old
+    /// key and switch the send key before releasing the writer lock.
+    async fn send_new_keys_and_switch(&self, new_send: SymmetricCrypto) -> Result<()> {
+        let plaintext = bincode::serialize(&Message::NewKeys)
+            .map_err(|e| QsshError::Protocol(format!("Serialization failed: {}", e)))?;
+        let mut writer = self.writer.lock().await;
+        self.write_frame_locked(&mut writer, plaintext).await?;
+        {
+            let mut send = self
+                .send_crypto
+                .write()
+                .map_err(|_| QsshError::Crypto("Send crypto lock poisoned during rekey".into()))?;
+            *send = new_send;
+        }
+        *self.send_sequence.lock().await = 0;
+        Ok(())
+    }
+
+    /// Derive the next epoch from the ML-KEM shared secret, salted with the
+    /// current epoch secret so every rekey is chained to the handshake.
+    /// Returns `(initiator_write_key, responder_write_key)` and advances the
+    /// epoch secret.
+    async fn derive_epoch_keys(&self, shared_secret: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        let mut epoch = self.epoch_secret.lock().await;
+        let hk = Hkdf::<Sha3_256>::new(Some(&epoch[..]), shared_secret);
+        let mut initiator_write = vec![0u8; 32];
+        let mut responder_write = vec![0u8; 32];
+        let mut next = [0u8; 32];
+        hk.expand(b"qssh-rekey-v2 initiator write", &mut initiator_write)
+            .map_err(|_| QsshError::Crypto("HKDF expand failed".into()))?;
+        hk.expand(b"qssh-rekey-v2 responder write", &mut responder_write)
+            .map_err(|_| QsshError::Crypto("HKDF expand failed".into()))?;
+        hk.expand(b"qssh-rekey-v2 epoch", &mut next)
+            .map_err(|_| QsshError::Crypto("HKDF expand failed".into()))?;
+        epoch.zeroize();
+        *epoch = next;
+        next.zeroize();
+        Ok((initiator_write, responder_write))
     }
 
     /// Get the number of completed rekey operations
@@ -507,7 +663,7 @@ impl QsshTransport for Transport {
         self.send_message(message).await
     }
 
-    async fn receive_message<T: for<'de> serde::Deserialize<'de>>(&self) -> Result<T> {
+    async fn receive_message<T: for<'de> serde::Deserialize<'de> + 'static>(&self) -> Result<T> {
         self.receive_message().await
     }
 

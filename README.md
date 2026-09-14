@@ -25,6 +25,12 @@ Upgrade, and treat any session made under an earlier default configuration as
 having had no confidentiality against a passive attacker. Details in
 [CHANGELOG.md](CHANGELOG.md) and [SECURITY.md](SECURITY.md).
 
+**0.5.0 (protocol 0.2) rewrote the in-band rekey.** Before it, the hourly
+rotation raced the data reader and switched both keys at once, which killed
+busy tunnels at every rotation, and derived the new keys from cleartext
+shares. Rotation now uses a fresh ML-KEM-1024 encapsulation, a two-phase
+key switch and a single reader; both ends must run 0.5.0.
+
 ## What It Does
 
 | Capability | Detail |
@@ -62,6 +68,7 @@ What qssh does not have yet is an external security audit.
 |---|---|
 | Parameter and structure conformance (key and ciphertext sizes, framing, encodings) | 71 Lean 4 lemmas, `lake build` reproduces them with zero sorries |
 | Panic freedom, functional correctness | Kani and Verus harnesses in the repository; not run in CI; unverified as of this release |
+| In-band rekey | Regression-tested under full-duplex load with rotations from both sides (`tests/rekey_transport.rs`); not formally modelled. |
 | Protocol security (handshake, key derivation) | Not verified. No symbolic or computational model of the qssh handshake exists. The July 2026 default key exchange bug was found by inspection, not by a proof. |
 
 The Lean development is on Zenodo: [DOI 10.5281/zenodo.18663125](https://doi.org/10.5281/zenodo.18663125)

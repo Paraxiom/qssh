@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.0 (2026-09-14), protocol 0.2: the in-band rekey rewritten
+
+Fixes the July 2026 rekey desync (busy forward tunnels dying with
+`failed to read frame length: early eof` at every hourly rotation; the
+Transparence anchoring sidecar was its first casualty).
+
+- **One reader.** Rekey control frames (`RekeyInit`, `RekeyReply`,
+  `NewKeys`) are consumed inside `Transport::receive_message` by whichever
+  task owns the reader. The timer task no longer reads from the transport,
+  so it can no longer steal data frames or lose the reply.
+- **Two-phase key switch.** Each side switches its send key right after
+  writing its own `NewKeys` (under the writer lock) and its receive key
+  right after reading the peer's. Frames are strictly ordered per
+  direction, so no frame is decrypted under the wrong epoch. `send_message`
+  now takes the writer lock before sequencing and encrypting, which is what
+  makes the switch atomic against concurrent senders.
+- **ML-KEM-1024 per rotation.** The old rekey derived the new keys from
+  Falcon-signed cleartext shares (no forward secrecy across rotations).
+  Each rotation now encapsulates to a fresh ML-KEM-1024 key, chained to the
+  previous epoch through an HKDF-SHA3-256 salt seeded from the handshake.
+- **Protocol 0.2.** 0.1 peers are refused at the version check; a legacy
+  `Rekey` message is refused with a protocol error. Both ends must run 0.5.0.
+- Tests: `tests/rekey_transport.rs` drives 3000 frames each way with four
+  rotations initiated from both sides, checks nothing is lost or reordered,
+  and covers the idle, double-initiation and stray-`NewKeys` cases.
+- The `key_rotation_interval` default (3600 s) is unchanged and is now safe
+  on busy tunnels; the `0` workaround from July is no longer needed.
+
+
 ## 0.4.4 (2026-09-14), documentation only
 
 - README reframed: qssh is its own protocol *by design* (pure Rust, no
