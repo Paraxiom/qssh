@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.4 (2026-09-14), documentation only
+
+- README reframed: qssh is its own protocol *by design* (pure Rust, no
+  OpenSSH or OpenSSL code, no GSSAPI), not a defect; the 0.4.3 wording read
+  as a limitation. Comparison with OpenSSH kept factual: OpenSSH ships hybrid
+  post-quantum key exchange; qssh adds post-quantum authentication and a
+  single auditable codebase. No code change from 0.4.2.
+
 ## 0.4.3 (2026-09-13), documentation only
 
 - README rewritten to state what qssh is and is not: its own protocol, not

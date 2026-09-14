@@ -1,12 +1,12 @@
 # qssh
 
-**A post-quantum remote shell in pure Rust. Its own protocol, not an OpenSSH replacement.**
+**A post-quantum secure shell in pure Rust, with its own protocol.**
 
-qssh is a remote shell, file copy and key agent written in pure Rust around
-post-quantum primitives: ML-KEM-1024 key exchange, Falcon and SPHINCS+
-authentication. It speaks its own protocol. It is **not** wire compatible with
-OpenSSH: a qssh client talks to a qsshd server, and neither interoperates with
-OpenSSH peers.
+qssh is a secure shell, file copy and key agent written from scratch in pure
+Rust around post-quantum primitives: ML-KEM-1024 key exchange, Falcon and
+SPHINCS+ authentication. It replaces the SSH toolchain when both ends run
+qssh: it speaks its own protocol by design, shares no code with OpenSSH or
+OpenSSL, and does not interoperate with OpenSSH peers.
 
 ---
 
@@ -40,18 +40,21 @@ having had no confidentiality against a passive attacker. Details in
 
 ## Where qssh Stands
 
-OpenSSH already ships a hybrid post-quantum key exchange by default:
-`sntrup761x25519` since 9.0 (2022) and `mlkem768x25519` since 10.0 (2025).
-For most users, "harvest now, decrypt later" on the SSH key exchange is
-addressed upstream, in audited, interoperable software. If that is your
-problem, use OpenSSH.
+OpenSSH ships a hybrid post-quantum key exchange by default: `sntrup761x25519`
+since 9.0 (2022) and `mlkem768x25519` since 10.0 (2025). qssh differs from it
+in three ways:
 
-What qssh adds is post-quantum **authentication**: Falcon-1024 and SPHINCS+
-host and user keys, which OpenSSH does not ship yet, in a small pure Rust
-codebase you can read end to end. What it costs: no OpenSSH interoperability,
-no external audit, and one serious default-configuration bug that we found
-and fixed ourselves (see the notice above). Treat it as a research and
-experimentation tool, not as infrastructure.
+- **Post-quantum authentication.** Falcon-1024 and SPHINCS+ host and user
+  keys, which OpenSSH does not ship yet.
+- **A single pure Rust codebase.** No OpenSSH or OpenSSL code, no C bindings,
+  no GSSAPI. Vulnerability classes that live in those code paths (for example
+  the OpenSSH GSSAPI pre-authentication crash CVE-2026-3497) do not exist here
+  by construction. That says nothing about qssh's own bugs: see the notice
+  above for the one we found and fixed.
+- **Its own protocol, by design.** Both ends run qssh. There is no
+  interoperability with OpenSSH peers and none was ever intended.
+
+What qssh does not have yet is an external security audit.
 
 ## What Is Verified, and What Is Not
 
